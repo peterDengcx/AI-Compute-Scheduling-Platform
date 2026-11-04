@@ -606,8 +606,7 @@ body {
 
 .apply-field .custom-row { margin-top: 8px; gap: 6px; }
 .apply-field .custom-row input[type="number"] { width: 72px; flex: none; padding: 9px 8px; }
-.apply-field .custom-row input[type="datetime-local"] { width: 100%; flex: 1; min-width: 0; padding: 9px 12px; }
-.apply-field .custom-row span { font-size: 12.5px; white-space: nowrap; }
+.apply-field .custom-row > span { font-size: 12.5px; white-space: nowrap; }
 .apply-field .seg { margin-bottom: 0; }
 
 .apply-foot {
@@ -1134,4 +1133,152 @@ input[type="datetime-local"] { border-radius: 13px; }
 
 @media (max-width: 760px) {
   .apply-modal .apply-field .chips-duration { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+/* ---------------------- 开始时间滑轮选择器 ---------------------- */
+
+.custom-row .time-trigger {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  padding: 10px 14px;
+  border-radius: 13px;
+  border: 1px solid var(--line-strong);
+  background: #fff;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.custom-row .time-trigger:hover {
+  border-color: rgba(79, 70, 229, 0.45);
+  box-shadow: 0 6px 18px rgba(79, 70, 229, 0.12);
+}
+
+.custom-row .time-trigger:active { transform: scale(0.996); }
+
+.time-trigger-value { font-variant-numeric: tabular-nums; letter-spacing: 0.3px; }
+.time-trigger-hint { flex: none; font-size: 12px; color: #6366f1; }
+
+.wheel-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(21, 27, 51, 0.38);
+  backdrop-filter: blur(8px) saturate(120%);
+  -webkit-backdrop-filter: blur(8px) saturate(120%);
+  animation: fade 0.18s ease both;
+}
+
+.wheel-sheet {
+  width: min(420px, 100%);
+  padding: 18px 20px 16px;
+  border-radius: 26px;
+  border: 1px solid rgba(79, 70, 229, 0.22);
+  background: linear-gradient(168deg, #ffffff, #f4f6ff);
+  box-shadow: 0 30px 80px rgba(23, 31, 61, 0.32);
+  animation: pop 0.26s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.wheel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.wheel-head h4 { margin: 0; font-size: 16.5px; font-weight: 650; }
+.wheel-head p { margin: 4px 0 0; font-size: 13px; color: #4f46e5; font-variant-numeric: tabular-nums; }
+
+.wheel-body {
+  position: relative;
+  height: 200px;
+  margin: 14px 0 8px;
+  border-radius: 18px;
+  background: rgba(79, 70, 229, 0.05);
+  overflow: hidden;
+}
+
+.wheel-body::before,
+.wheel-body::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 54px;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.wheel-body::before { top: 0; background: linear-gradient(180deg, rgba(247, 248, 255, 0.96), rgba(247, 248, 255, 0)); }
+.wheel-body::after { bottom: 0; background: linear-gradient(0deg, rgba(247, 248, 255, 0.96), rgba(247, 248, 255, 0)); }
+
+.wheel-band {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: 80px;
+  height: 40px;
+  z-index: 1;
+  border-radius: 12px;
+  border: 1px solid rgba(79, 70, 229, 0.18);
+  background: rgba(79, 70, 229, 0.09);
+  pointer-events: none;
+}
+
+.wheel-cols {
+  position: relative;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: 1.8fr 1fr 1fr;
+  gap: 2px;
+  height: 100%;
+}
+
+.wheel {
+  height: 100%;
+  padding: 80px 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-snap-type: y mandatory;
+  scrollbar-width: none;
+  touch-action: pan-y;
+  cursor: grab;
+  -webkit-overflow-scrolling: touch;
+}
+
+.wheel::-webkit-scrollbar { display: none; }
+.wheel.dragging { scroll-snap-type: none; cursor: grabbing; }
+
+.wheel-item {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 40px;
+  font-size: 15px;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.42;
+  transform: scale(0.94);
+  scroll-snap-align: center;
+  user-select: none;
+  cursor: pointer;
+  transition: opacity 0.2s ease, transform 0.2s ease, color 0.2s ease;
+}
+
+.wheel-item:hover { opacity: 0.8; }
+.wheel-item.active { opacity: 1; color: #312e81; font-weight: 650; transform: scale(1); }
+
+.wheel-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.wheel-tip { font-size: 12px; color: var(--dim); }
+.wheel-actions { display: flex; flex: none; gap: 8px; }
+
+@media (max-width: 420px) {
+  .wheel-tip { display: none; }
+  .wheel-actions { width: 100%; }
+  .wheel-actions .primary-btn { flex: 1; }
 }

@@ -397,9 +397,10 @@ function renderApplyPanel(machine) {
               data-action="draft-start-mode" data-mode="later">预约开始</button>
           </div>
           <div class="custom-row" ${draft.startMode === 'later' ? '' : 'hidden'}>
-            <input type="datetime-local" id="draftStartAt"
-              value="${draft.startAt ? toLocalInput(draft.startAt) : ''}"
-              min="${toLocalInput(now())}" max="${toLocalInput(now() + MAX_ADVANCE)}">
+            <button type="button" class="time-trigger" data-action="open-time-picker">
+              <span class="time-trigger-value">${draft.startAt ? fmtClock(draft.startAt) : '选择开始时间'}</span>
+              <span class="time-trigger-hint">滑动选择</span>
+            </button>
           </div>
         </div>
       </div>
@@ -460,7 +461,12 @@ function openApplyModal() {
     if (event.target === backdrop) closeApply();
   });
   escHandler = (event) => {
-    if (event.key === 'Escape') closeApply();
+    if (event.key !== 'Escape') return;
+    if (els.modalRoot.querySelector('.wheel-backdrop')) {
+      closeTimePicker();
+      return;
+    }
+    closeApply();
   };
   document.addEventListener('keydown', escHandler);
 }
@@ -499,6 +505,204 @@ function closeApply() {
   closeModal();
 }
 
+/* ---------------------- 开始时间滑轮选择（可拖动、自动吸附） ---------------------- */
+
+const WHEEL_ITEM = 40;
+const MINUTE_STEP = 5;
+let pickerDates = [];
+
+function wheelDates() {
+  const first = new Date(now());
+  first.setHours(0, 0, 0, 0);
+  const last = new Date(now() + MAX_ADVANCE);
+  last.setHours(0, 0, 0, 0);
+  const list = [];
+  for (let time = first.getTime(); time <= last.getTime(); time += DAY) list.push(time);
+  return list;
+}
+
+function wheelDateLabel(timestamp) {
+  const today = new Date(now());
+  today.setHours(0, 0, 0, 0);
+  const diff = Math.round((timestamp - today.getTime()) / DAY);
+  const tag = diff === 0 ? '今天' : diff === 1 ? '明天' : diff === 2 ? '后天' : '';
+  const date = new Date(timestamp);
+  return `${tag ? `${tag} · ` : ''}${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function renderWheelColumn(key, items, index) {
+  return `
+    <div class="wheel" data-wheel="${key}" data-index="${index}">
+      ${items
+        .map((text, i) => `<div class="wheel-item${i === index ? ' active' : ''}" data-index="${i}">${text}</div>`)
+        .join('')}
+    </div>`;
+}
+
+function openTimePicker() {
+  if (!draft) return;
+  closeTimePicker();
+
+  pickerDates = wheelDates();
+  const hours = Array.from({ length: 24 }, (_, i) => pad(i));
+  const minutes = Array.from({ length: 60 / MINUTE_STEP }, (_, i) => pad(i * MINUTE_STEP));
+
+  const base = new Date(draft.startAt && draft.startAt > now() ? draft.startAt : now());
+  const dayStart = new Date(base);
+  dayStart.setHours(0, 0, 0, 0);
+  const dateIndex = Math.max(0, pickerDates.indexOf(dayStart.getTime()));
+  const hourIndex = base.getHours();
+  const minuteIndex = Math.min(minutes.length - 1, Math.round(base.getMinutes() / MINUTE_STEP));
+
+  els.modalRoot.insertAdjacentHTML(
+    'beforeend',
+    `
+    <div class="wheel-backdrop">
+      <section class="wheel-sheet" role="dialog" aria-label="选择开始时间">
+        <header class="wheel-head">
+          <div>
+            <h4>选择开始时间</h4>
+            <p data-wheel-preview></p>
+          </div>
+          <button type="button" class="icon-btn" data-wheel-close aria-label="关闭">×</button>
+        </header>
+        <div class="wheel-body">
+          <div class="wheel-band" aria-hidden="true"></div>
+          <div class="wheel-cols">
+            ${renderWheelColumn('date', pickerDates.map(wheelDateLabel), dateIndex)}
+            ${renderWheelColumn('hour', hours, hourIndex)}
+            ${renderWheelColumn('minute', minutes, minuteIndex)}
+          </div>
+        </div>
+        <footer class="wheel-foot">
+          <span class="wheel-tip">最多可提前 24 小时，松手自动吸附</span>
+          <div class="wheel-actions">
+            <button type="button" class="ghost-btn small" data-wheel-close>取消</button>
+            <button type="button" class="primary-btn small" data-wheel-confirm>确定</button>
+          </div>
+        </footer>
+      </section>
+    </div>`
+  );
+
+  const backdrop = els.modalRoot.querySelector('.wheel-backdrop');
+  const sheet = backdrop.querySelector('.wheel-sheet');
+  backdrop.addEventListener('mousedown', (event) => {
+    if (event.target === backdrop) closeTimePicker();
+  });
+  backdrop.querySelectorAll('[data-wheel-close]').forEach((btn) => {
+    btn.addEventListener('click', closeTimePicker);
+  });
+  backdrop.querySelector('[data-wheel-confirm]').addEventListener('click', confirmTimePicker);
+
+  // 初始定位到当前值，直接落位不做动画
+  sheet.querySelectorAll('.wheel').forEach((wheel) => {
+    wheel.scrollTop = Number(wheel.dataset.index) * WHEEL_ITEM;
+    bindWheel(wheel, updatePickerPreview);
+  });
+  updatePickerPreview();
+}
+
+function closeTimePicker() {
+  const backdrop = els.modalRoot.querySelector('.wheel-backdrop');
+  if (backdrop) backdrop.remove();
+}
+
+function pickerValue() {
+  const sheet = els.modalRoot.querySelector('.wheel-sheet');
+  if (!sheet || !pickerDates.length) return null;
+  const pick = (key) => sheet.querySelector(`[data-wheel="${key}"]`);
+  const dateIndex = Number(pick('date').dataset.index) || 0;
+  const hour = Number(pick('hour').dataset.index) || 0;
+  const minute = (Number(pick('minute').dataset.index) || 0) * MINUTE_STEP;
+  const day = pickerDates[Math.max(0, Math.min(pickerDates.length - 1, dateIndex))];
+  return day + hour * HOUR + minute * 60000;
+}
+
+function updatePickerPreview() {
+  const preview = els.modalRoot.querySelector('[data-wheel-preview]');
+  const value = pickerValue();
+  if (preview) preview.textContent = value ? `${fmtClock(value)} 开始` : '';
+}
+
+function confirmTimePicker() {
+  if (!draft) return;
+  const value = pickerValue();
+  if (!value) return closeTimePicker();
+  // 超出「当前时刻 ~ 24 小时后」时夹到边界，避免白选
+  draft.startAt = Math.min(now() + MAX_ADVANCE, Math.max(now(), value));
+  closeTimePicker();
+  refreshApplyModal();
+}
+
+// 滚动高亮 + 鼠标拖动跟手 + 松手吸附（触屏交给原生惯性滚动）
+function bindWheel(wheel, onChange) {
+  const items = Array.from(wheel.querySelectorAll('.wheel-item'));
+  const currentIndex = () =>
+    Math.max(0, Math.min(items.length - 1, Math.round(wheel.scrollTop / WHEEL_ITEM)));
+
+  let frame = 0;
+  const paint = () => {
+    frame = 0;
+    const index = currentIndex();
+    items.forEach((item, i) => item.classList.toggle('active', i === index));
+    if (wheel.dataset.index !== String(index)) {
+      wheel.dataset.index = String(index);
+      onChange();
+    }
+  };
+  wheel.addEventListener(
+    'scroll',
+    () => {
+      if (!frame) frame = requestAnimationFrame(paint);
+    },
+    { passive: true }
+  );
+
+  let dragging = false;
+  let moved = false;
+  let startY = 0;
+  let startTop = 0;
+
+  wheel.addEventListener('pointerdown', (event) => {
+    if (event.pointerType !== 'mouse' || event.button !== 0) return;
+    dragging = true;
+    moved = false;
+    startY = event.clientY;
+    startTop = wheel.scrollTop;
+    wheel.classList.add('dragging');
+    wheel.setPointerCapture(event.pointerId);
+  });
+
+  wheel.addEventListener('pointermove', (event) => {
+    if (!dragging) return;
+    const offset = event.clientY - startY;
+    if (Math.abs(offset) > 3) moved = true;
+    wheel.scrollTop = startTop - offset;
+  });
+
+  const endDrag = (event) => {
+    if (!dragging) return;
+    dragging = false;
+    wheel.classList.remove('dragging');
+    try {
+      wheel.releasePointerCapture(event.pointerId);
+    } catch (err) {
+      /* 指针已释放 */
+    }
+    wheel.scrollTo({ top: currentIndex() * WHEEL_ITEM, behavior: 'smooth' });
+  };
+  wheel.addEventListener('pointerup', endDrag);
+  wheel.addEventListener('pointercancel', endDrag);
+
+  items.forEach((item, index) => {
+    item.addEventListener('click', () => {
+      if (moved) return; // 拖动结束后不误触发点击
+      wheel.scrollTo({ top: index * WHEEL_ITEM, behavior: 'smooth' });
+    });
+  });
+}
+
 function onPanelClick(event) {
   const trigger = event.target.closest('[data-action]');
   if (!trigger || !draft) return;
@@ -532,8 +736,16 @@ function onPanelClick(event) {
   }
   if (action === 'draft-start-mode') {
     draft.startMode = trigger.dataset.mode;
-    if (draft.startMode === 'later' && !(draft.startAt > now())) draft.startAt = now() + HOUR;
+    // 与滑轮 5 分钟刻度对齐，避免入口时间和弹层选中项差 1 分钟
+    if (draft.startMode === 'later' && !(draft.startAt > now())) {
+      const step = MINUTE_STEP * 60 * 1000;
+      draft.startAt = Math.ceil((now() + HOUR) / step) * step;
+    }
     refreshApplyModal();
+    return;
+  }
+  if (action === 'open-time-picker') {
+    openTimePicker();
   }
 }
 
@@ -619,11 +831,6 @@ function onPanelChange(event) {
     }
     refreshApplyModal();
     return;
-  }
-
-  if (event.target.id === 'draftStartAt') {
-    draft.startAt = event.target.value ? new Date(event.target.value).getTime() : null;
-    refreshApplyModal();
   }
 }
 
@@ -1383,11 +1590,6 @@ function escapeHtml(value) {
 
 function pad(value) {
   return String(value).padStart(2, '0');
-}
-
-function toLocalInput(timestamp) {
-  const date = new Date(timestamp);
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function fmtRemain(ms) {
