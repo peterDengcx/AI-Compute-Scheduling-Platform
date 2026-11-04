@@ -28,7 +28,7 @@
       </span>
       <div class="brand-text">
         <h1>算力卡调度台</h1>
-        <p>GPU 自助申请 · 按卡占用 · 到点自动释放</p>
+        <p>推理节点 · 多卡申请 · 提前预约 · 到点自动释放</p>
       </div>
     </div>
     <div class="user-box">
@@ -44,8 +44,11 @@
     <div class="layout">
       <section class="machines-section">
         <div class="section-head">
-          <h2>机器列表</h2>
-          <span class="hint">点击空闲的卡即可申请占用，点击占用中的卡可查看详情</span>
+          <div>
+            <h2>推理节点</h2>
+            <span class="hint">点击空闲卡申请占用，一次可选 1 / 2 / 4 / 8 张，最多提前 24 小时预约</span>
+          </div>
+          <button class="primary-btn small" id="addNode" type="button">+ 新增节点</button>
         </div>
         <div class="machine-grid" id="machines"></div>
       </section>

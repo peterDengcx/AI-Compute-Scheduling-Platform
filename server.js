@@ -13,14 +13,9 @@ const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const GPU_PER_MACHINE = 8;
 const MIN_DURATION = 5 * 60 * 1000;
 const MAX_DURATION = 7 * 24 * 60 * 60 * 1000;
+const MAX_ADVANCE = 24 * 60 * 60 * 1000;
 const MAX_NOTE = 60;
-
-const MACHINE_DEFS = [
-  { id: 'm1', name: '训练节点 A', model: 'Ascend 910B', spec: '8 × 64GB HBM · 800G IB' },
-  { id: 'm2', name: '训练节点 B', model: 'Ascend 910B', spec: '8 × 64GB HBM · 800G IB' },
-  { id: 'm3', name: '推理节点 C', model: 'Ascend 910B', spec: '8 × 64GB HBM · 200G RoCE' },
-  { id: 'm4', name: '推理节点 D', model: 'NVIDIA A100', spec: '8 × 80GB HBM · 200G RoCE' },
-];
+const CARD_CHOICES = [1, 2, 4, 8];
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -41,56 +36,42 @@ class HttpError extends Error {
 
 /* ---------------------------------- 状态 ---------------------------------- */
 
-function buildFreshState() {
-  const now = Date.now();
-  const machines = MACHINE_DEFS.map((def) => ({
-    ...def,
-    gpus: Array.from({ length: GPU_PER_MACHINE }, (_, i) => ({ id: i, booking: null })),
-  }));
-
-  // 首次启动时写入少量演示占用，便于直接看到倒计时与排队效果
-  const demos = [
-    ['m1', 0, '李哲', 78, 42, 'LLM 微调 · exp-12'],
-    ['m1', 1, '王雨', 25, 190, '多模态预训练'],
-    ['m2', 5, '陈默', 51, 9, '推理压测 · 批次 07'],
-    ['m3', 2, '周然', 120, 420, '强化学习训练'],
-    ['m3', 3, '林一', 35, 105, '算子精度回归'],
-  ];
-  for (const [machineId, gpuIndex, user, startMinAgo, endMinAhead, note] of demos) {
-    const machine = machines.find((m) => m.id === machineId);
-    machine.gpus[gpuIndex].booking = {
-      id: crypto.randomUUID(),
-      user,
-      note,
-      startAt: now - startMinAgo * 60 * 1000,
-      endAt: now + endMinAhead * 60 * 1000,
-    };
-  }
-
+// 推理节点全部由用户录入，序号从 0 开始
+function createMachine(index, { ip, password, model }) {
   return {
-    machines,
-    queue: [
-      {
-        id: crypto.randomUUID(),
-        user: '赵敏',
-        machineId: 'm1',
-        gpuIndex: 0,
-        durationMs: 2 * 60 * 60 * 1000,
-        note: '复现论文基线',
-        createdAt: now - 6 * 60 * 1000,
-      },
-    ],
+    id: `node-${index}`,
+    index,
+    name: `推理节点 ${index}`,
+    ip,
+    password,
+    model,
+    gpus: Array.from({ length: GPU_PER_MACHINE }, (_, i) => ({ id: i, bookings: [] })),
   };
+}
+
+function buildFreshState() {
+  return { machines: [], queue: [] };
+}
+
+function isValidState(parsed) {
+  return (
+    parsed &&
+    Array.isArray(parsed.machines) &&
+    Array.isArray(parsed.queue) &&
+    parsed.machines.every(
+      (machine) => Array.isArray(machine.gpus) && machine.gpus.every((gpu) => Array.isArray(gpu.bookings))
+    )
+  );
 }
 
 function loadState() {
   try {
     if (fs.existsSync(STATE_FILE)) {
       const parsed = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-      if (Array.isArray(parsed.machines) && Array.isArray(parsed.queue)) return parsed;
+      if (isValidState(parsed)) return parsed;
     }
   } catch (err) {
-    console.warn('[warn] 数据文件读取失败，使用初始数据：', err.message);
+    console.warn('[warn] 数据文件读取失败，使用空数据：', err.message);
   }
   const fresh = buildFreshState();
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -109,13 +90,64 @@ function save() {
 
 /* --------------------------------- 调度逻辑 -------------------------------- */
 
+function findMachine(machineId) {
+  return state.machines.find((machine) => machine.id === machineId);
+}
+
+function gpuFreeBetween(gpu, startAt, endAt) {
+  return !gpu.bookings.some((booking) => booking.startAt < endAt && startAt < booking.endAt);
+}
+
+// 在单台节点内挑选 count 张在目标时段内可用的卡，优先连续卡号
+function pickGpus(machine, startAt, endAt, count) {
+  const free = machine.gpus.filter((gpu) => gpuFreeBetween(gpu, startAt, endAt)).map((gpu) => gpu.id);
+  if (free.length < count) return null;
+  for (let start = 0; start + count <= machine.gpus.length; start += 1) {
+    const run = machine.gpus.slice(start, start + count).map((gpu) => gpu.id);
+    if (run.every((id) => free.includes(id))) return run;
+  }
+  return free.slice(0, count);
+}
+
+function createBookings(user, machine, gpuIds, { startAt, endAt, note }) {
+  const groupId = crypto.randomUUID();
+  for (const gpuId of gpuIds) {
+    const gpu = machine.gpus.find((item) => item.id === gpuId);
+    gpu.bookings.push({
+      id: crypto.randomUUID(),
+      groupId,
+      user,
+      note,
+      count: gpuIds.length,
+      startAt,
+      endAt,
+    });
+    gpu.bookings.sort((a, b) => a.startAt - b.startAt);
+  }
+  return groupId;
+}
+
+// 按顺序尝试分配，成功返回 { machine, gpuIds, groupId }
+function acquire(user, machineId, startAt, endAt, count, note) {
+  const pool = machineId === 'any' ? state.machines : [findMachine(machineId)];
+  for (const machine of pool) {
+    if (!machine) continue;
+    const gpuIds = pickGpus(machine, startAt, endAt, count);
+    if (!gpuIds) continue;
+    const groupId = createBookings(user, machine, gpuIds, { startAt, endAt, note });
+    return { machine, gpuIds, groupId };
+  }
+  return null;
+}
+
 function sweepExpired() {
   const now = Date.now();
   let changed = false;
   for (const machine of state.machines) {
     for (const gpu of machine.gpus) {
-      if (gpu.booking && gpu.booking.endAt <= now) {
-        gpu.booking = null;
+      const kept = gpu.bookings.filter((booking) => booking.endAt > now);
+      if (kept.length !== gpu.bookings.length) {
+        gpu.bookings = kept;
         changed = true;
       }
     }
@@ -123,46 +155,19 @@ function sweepExpired() {
   return changed;
 }
 
-function findMachine(machineId) {
-  return state.machines.find((m) => m.id === machineId);
-}
-
-function findFreeSlot(machineId, gpuIndex) {
-  const pool = machineId === 'any' ? state.machines : [findMachine(machineId)];
-  for (const machine of pool) {
-    if (!machine) continue;
-    const gpus = gpuIndex == null ? machine.gpus : machine.gpus.filter((g) => g.id === gpuIndex);
-    for (const gpu of gpus) {
-      if (!gpu.booking) return { machine, gpu };
-    }
-  }
-  return null;
-}
-
-function hasQueueFor(machineId, gpuIndex) {
-  return state.queue.some(
-    (q) => q.machineId === 'any' || (q.machineId === machineId && (q.gpuIndex == null || q.gpuIndex === gpuIndex))
-  );
-}
-
-function makeBooking(user, durationMs, note) {
-  const startAt = Date.now();
-  return { id: crypto.randomUUID(), user, note, startAt, endAt: startAt + durationMs };
-}
-
-// 按队列顺序，把已经释放出来的卡自动分给等待中的用户
+// 按队列顺序，把当前空出来的卡自动分给等待中的用户
 function dispatchQueue() {
   let changed = false;
-  let i = 0;
-  while (i < state.queue.length) {
-    const entry = state.queue[i];
-    const slot = findFreeSlot(entry.machineId, entry.gpuIndex);
-    if (!slot) {
-      i += 1;
+  let index = 0;
+  while (index < state.queue.length) {
+    const entry = state.queue[index];
+    const now = Date.now();
+    const result = acquire(entry.user, entry.machineId, now, now + entry.durationMs, entry.gpuCount, entry.note);
+    if (!result) {
+      index += 1;
       continue;
     }
-    slot.gpu.booking = makeBooking(entry.user, entry.durationMs, entry.note);
-    state.queue.splice(i, 1);
+    state.queue.splice(index, 1);
     changed = true;
   }
   return changed;
@@ -191,71 +196,94 @@ function requireDuration(body) {
   return Math.round(ms);
 }
 
+function requireCount(body) {
+  const count = Number(body.count == null || body.count === '' ? 1 : body.count);
+  if (!CARD_CHOICES.includes(count)) throw new HttpError(400, '卡数只能选择 1 / 2 / 4 / 8 张');
+  return count;
+}
+
+function requireStart(body) {
+  const now = Date.now();
+  if (body.startAt == null || body.startAt === '') return now;
+  const startAt = Number(body.startAt);
+  if (!Number.isFinite(startAt)) throw new HttpError(400, '开始时间不合法');
+  if (startAt < now - 60 * 1000) throw new HttpError(400, '开始时间不能早于当前时间');
+  if (startAt > now + MAX_ADVANCE) throw new HttpError(400, '最多只能提前 24 小时预约');
+  return Math.max(startAt, now);
+}
+
 function normalizeNote(note) {
   return String(note || '').trim().slice(0, MAX_NOTE);
 }
 
-function parseTarget(body) {
+function parseMachineId(body) {
   const machineId = body.machineId === 'any' ? 'any' : String(body.machineId || '');
-  let gpuIndex = body.gpuIndex == null || body.gpuIndex === '' ? null : Number(body.gpuIndex);
-  if (machineId === 'any') gpuIndex = null;
-  if (machineId !== 'any' && !findMachine(machineId)) throw new HttpError(404, '机器不存在');
-  if (gpuIndex != null && (!Number.isInteger(gpuIndex) || !(gpuIndex >= 0 && gpuIndex < GPU_PER_MACHINE))) {
-    throw new HttpError(400, '卡号不合法');
-  }
-  if (machineId === 'any' && gpuIndex != null) throw new HttpError(400, '目标不合法');
-  return { machineId, gpuIndex };
+  if (machineId !== 'any' && !findMachine(machineId)) throw new HttpError(404, '推理节点不存在');
+  return machineId;
 }
 
 /* --------------------------------- 业务接口 -------------------------------- */
 
 function occupy(body) {
   const user = requireUser(body);
-  const { machineId, gpuIndex } = parseTarget(body);
-  if (machineId === 'any' || gpuIndex == null) throw new HttpError(400, '请选择具体的卡');
+  const machineId = parseMachineId(body);
+  const count = requireCount(body);
   const durationMs = requireDuration(body);
+  const startAt = requireStart(body);
+  const endAt = startAt + durationMs;
   const note = normalizeNote(body.note);
 
   refresh();
 
-  const machine = findMachine(machineId);
-  const gpu = machine.gpus.find((g) => g.id === gpuIndex);
-  if (gpu.booking) throw new HttpError(409, '这张卡已经被占用，可以加入排队等候');
-  if (hasQueueFor(machineId, gpuIndex)) throw new HttpError(409, '这张卡已有用户在排队，请加入排队');
-
-  gpu.booking = makeBooking(user, durationMs, note);
+  const result = acquire(user, machineId, startAt, endAt, count, note);
+  if (!result) {
+    const future = startAt > Date.now() + 5000;
+    throw new HttpError(
+      409,
+      future ? `该时段没有 ${count} 张可用卡，请调整开始时间或卡数` : `当前没有 ${count} 张可用卡，可以加入排队等候`
+    );
+  }
   save();
-  return { ok: true, booking: gpu.booking, machineId, gpuIndex };
+  return {
+    ok: true,
+    machineId: result.machine.id,
+    machineName: result.machine.name,
+    gpuIndexes: result.gpuIds,
+    groupId: result.groupId,
+    startAt,
+    endAt,
+  };
 }
 
 function enqueue(body) {
   const user = requireUser(body);
-  const { machineId, gpuIndex } = parseTarget(body);
+  const machineId = parseMachineId(body);
+  const count = requireCount(body);
   const durationMs = requireDuration(body);
   const note = normalizeNote(body.note);
 
   refresh();
 
-  if (state.queue.some((q) => q.user === user)) {
+  if (state.queue.some((entry) => entry.user === user)) {
     throw new HttpError(409, '你已在排队中，请先在队列中取消');
   }
 
-  // 目标当前空闲且前方无人排队时，直接分配，无需排队
-  const slot = findFreeSlot(machineId, gpuIndex);
-  if (slot && !hasQueueFor(slot.machine.id, slot.gpu.id)) {
-    slot.gpu.booking = makeBooking(user, durationMs, note);
+  // 当前能否直接满足，能则不进队列
+  const now = Date.now();
+  const direct = acquire(user, machineId, now, now + durationMs, count, note);
+  if (direct) {
     save();
-    return { ok: true, booked: true, machineId: slot.machine.id, gpuIndex: slot.gpu.id, booking: slot.gpu.booking };
+    return { ok: true, booked: true, machineId: direct.machine.id, machineName: direct.machine.name, gpuIndexes: direct.gpuIds };
   }
 
   state.queue.push({
     id: crypto.randomUUID(),
     user,
     machineId,
-    gpuIndex,
+    gpuCount: count,
     durationMs,
     note,
-    createdAt: Date.now(),
+    createdAt: now,
   });
   save();
   return { ok: true, booked: false, position: state.queue.length };
@@ -263,26 +291,43 @@ function enqueue(body) {
 
 function release(body) {
   const user = requireUser(body);
-  const { machineId, gpuIndex } = parseTarget(body);
-  if (machineId === 'any' || gpuIndex == null) throw new HttpError(400, '请指定要释放的卡');
+  const machineId = parseMachineId(body);
+  const gpuIndex = Number(body.gpuIndex);
+  if (machineId === 'any' || !Number.isInteger(gpuIndex)) throw new HttpError(400, '请指定要释放的卡');
 
   refresh();
 
   const machine = findMachine(machineId);
-  const gpu = machine.gpus.find((g) => g.id === gpuIndex);
-  if (!gpu.booking) throw new HttpError(409, '这张卡当前已是空闲状态');
-  if (gpu.booking.user !== user) throw new HttpError(403, '只能释放自己占用的卡');
+  const gpu = machine.gpus.find((item) => item.id === gpuIndex);
+  if (!gpu) throw new HttpError(404, '卡不存在');
+  if (!gpu.bookings.length) throw new HttpError(409, '这张卡当前已是空闲状态');
 
-  gpu.booking = null;
+  const now = Date.now();
+  const target =
+    gpu.bookings.find((booking) => booking.startAt <= now && booking.endAt > now) || gpu.bookings[0];
+  if (target.user !== user) throw new HttpError(403, '只能释放自己占用的卡');
+
+  let released = 0;
+  if (target.groupId) {
+    for (const item of machine.gpus) {
+      const before = item.bookings.length;
+      item.bookings = item.bookings.filter((booking) => booking.groupId !== target.groupId);
+      released += before - item.bookings.length;
+    }
+  } else {
+    gpu.bookings = gpu.bookings.filter((booking) => booking.id !== target.id);
+    released = 1;
+  }
+
   refresh();
   save();
-  return { ok: true };
+  return { ok: true, released, future: target.startAt > now };
 }
 
 function cancelQueue(body) {
   const user = requireUser(body);
   const id = String(body.id || '');
-  const index = state.queue.findIndex((q) => q.id === id);
+  const index = state.queue.findIndex((entry) => entry.id === id);
   if (index === -1) throw new HttpError(404, '排队记录不存在');
   if (state.queue[index].user !== user) throw new HttpError(403, '只能取消自己的排队');
   state.queue.splice(index, 1);
@@ -290,13 +335,54 @@ function cancelQueue(body) {
   return { ok: true };
 }
 
+function addMachine(body) {
+  const ip = String(body.ip || '').trim();
+  const password = String(body.password || '').trim();
+  const model = String(body.model || '').trim();
+
+  if (!ip) throw new HttpError(400, '请填写节点 IP');
+  if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(ip) && !/^[a-zA-Z0-9][a-zA-Z0-9.-]*$/.test(ip)) {
+    throw new HttpError(400, 'IP 格式不正确，例如 192.168.1.20');
+  }
+  if (ip.length > 64) throw new HttpError(400, 'IP 长度不能超过 64 个字符');
+  if (!password) throw new HttpError(400, '请填写节点登录密码');
+  if (password.length > 64) throw new HttpError(400, '密码不能超过 64 个字符');
+  if (!model) throw new HttpError(400, '请填写机型');
+  if (model.length > 40) throw new HttpError(400, '机型不能超过 40 个字符');
+  if (state.machines.some((machine) => machine.ip === ip)) {
+    throw new HttpError(409, '该 IP 已存在，请勿重复添加');
+  }
+
+  let index = 0;
+  while (state.machines.some((machine) => machine.index === index)) index += 1;
+
+  const machine = createMachine(index, { ip, password, model });
+  state.machines.push(machine);
+  state.machines.sort((a, b) => a.index - b.index);
+  save();
+  return { ok: true, machine: publicMachine(machine) };
+}
+
 /* --------------------------------- HTTP ---------------------------------- */
+
+function publicMachine(machine) {
+  return {
+    id: machine.id,
+    index: machine.index,
+    name: machine.name,
+    ip: machine.ip,
+    model: machine.model,
+    gpus: machine.gpus,
+  };
+}
 
 function publicState() {
   return {
     serverTime: Date.now(),
     gpuPerMachine: GPU_PER_MACHINE,
-    machines: state.machines,
+    maxAdvance: MAX_ADVANCE,
+    cardChoices: CARD_CHOICES,
+    machines: state.machines.map(publicMachine),
     queue: state.queue,
   };
 }
@@ -351,6 +437,8 @@ async function handleApi(req, res, pathname) {
       return sendJson(res, 200, release(body));
     case '/api/queue/cancel':
       return sendJson(res, 200, cancelQueue(body));
+    case '/api/machines':
+      return sendJson(res, 200, addMachine(body));
     default:
       throw new HttpError(404, '接口不存在');
   }
