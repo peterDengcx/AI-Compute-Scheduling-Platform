@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>算力卡调度台 · GPU 自助申请与占用</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b1220'/%3E%3Crect x='4' y='4' width='10' height='10' rx='2.5' fill='%235eead4'/%3E%3Crect x='18' y='4' width='10' height='10' rx='2.5' fill='%23818cf8'/%3E%3Crect x='4' y='18' width='10' height='10' rx='2.5' fill='%23818cf8'/%3E%3Crect x='18' y='18' width='10' height='10' rx='2.5' fill='%2334d399'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="styles.css?v=15">
+  <link rel="stylesheet" href="styles.css?v=23">
 </head>
 <body>
   <div class="bg-glow" aria-hidden="true"></div>
@@ -41,27 +41,18 @@
         <div class="section-head">
           <div>
             <h2>推理节点</h2>
-            <span class="hint">点击空闲卡申请占用，一次可选 1 / 2 / 4 / 8 张，最多提前 24 小时预约</span>
+            <span class="hint">左侧为 8 卡实时状态，右侧为当天 0:00–24:00 的预约时间轴；空档可直接占用，最多提前 48 小时预约</span>
           </div>
           <button class="primary-btn small" id="addNode" type="button">+ 新增节点</button>
         </div>
         <div class="machine-grid" id="machines"></div>
       </section>
-
-      <aside class="queue-panel">
-        <div class="section-head compact">
-          <h2>排队队列</h2>
-          <span class="count-pill" id="queueCount">0</span>
-        </div>
-        <div class="queue-list" id="queueList"></div>
-        <p class="queue-tip">空闲卡释出后按队列顺序自动分配；队首需求暂时放不下时，会先分给能立刻用上的小需求，避免卡空转。</p>
-      </aside>
     </div>
   </main>
 
   <div id="modalRoot"></div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-  <script src="app.js?v=15"></script>
+  <script src="app.js?v=23"></script>
 </body>
 </html>

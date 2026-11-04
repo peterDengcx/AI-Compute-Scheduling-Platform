@@ -9,17 +9,18 @@ const DURATION_OPTIONS = [
   { label: '8 hour', ms: 8 * 60 * 60 * 1000 },
   { label: '12 hour', ms: 12 * 60 * 60 * 1000 },
   { label: '24 hour', ms: 24 * 60 * 60 * 1000 },
+  { label: '48 hour', ms: 48 * 60 * 60 * 1000 },
 ];
 const CARD_OPTIONS = [1, 2, 4, 8];
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
-const MAX_ADVANCE = DAY;
+const DEFAULT_MAX_ADVANCE = 2 * DAY;
+const MIN_DURATION = 5 * 60 * 1000;
+const MAX_DURATION = 2 * DAY;
 
 const els = {
   stats: document.getElementById('stats'),
   machines: document.getElementById('machines'),
-  queueList: document.getElementById('queueList'),
-  queueCount: document.getElementById('queueCount'),
   addNode: document.getElementById('addNode'),
   userName: document.getElementById('userName'),
   userAvatar: document.getElementById('userAvatar'),
@@ -28,10 +29,10 @@ const els = {
   toast: document.getElementById('toast'),
 };
 
-let state = { machines: [], queue: [], gpuPerMachine: 8, cardChoices: CARD_OPTIONS };
+let state = { machines: [], gpuPerMachine: 8, cardChoices: CARD_OPTIONS, maxAdvance: DEFAULT_MAX_ADVANCE };
 let clockOffset = 0;
 let me = localStorage.getItem('gpu.user') || '';
-// 释放凭证：groupId / 排队 id → token，只保存在申请时的这个浏览器里
+// 释放凭证：groupId → token，只保存在申请时的这个浏览器里
 let ownedTokens = (() => {
   try {
     const raw = JSON.parse(localStorage.getItem('gpu.tokens') || '{}');
@@ -53,6 +54,14 @@ let titleTimer = null;
 let draft = null;
 
 const now = () => Date.now() + clockOffset;
+const maxAdvance = () => state.maxAdvance || DEFAULT_MAX_ADVANCE;
+
+// 时间轴以「今天 0:00」为左边界，跨过 24:00 自动切到新的一天
+function todayStart() {
+  const date = new Date(now());
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
 
 /* ------------------------------- 释放凭证 ------------------------------- */
 
@@ -85,7 +94,6 @@ function isMine(record) {
   els.modalRoot.addEventListener('click', onPanelClick);
   els.modalRoot.addEventListener('input', onPanelInput);
   els.modalRoot.addEventListener('change', onPanelChange);
-  els.queueList.addEventListener('click', onQueueClick);
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {
       stopTitleBlink();
@@ -123,7 +131,8 @@ async function poll() {
 function applyState(data) {
   clockOffset = data.serverTime - Date.now();
   state = data;
-  const signature = JSON.stringify([data.machines, data.queue]);
+  // 把「今天」也算进签名，0 点一到就重绘时间轴，无需等数据变化
+  const signature = JSON.stringify([data.machines, todayStart()]);
   if (signature === lastSignature) return;
   lastSignature = signature;
   render();
@@ -155,7 +164,6 @@ function render() {
   renderUser();
   renderStats();
   renderMachines();
-  renderQueue();
   tick();
 }
 
@@ -169,14 +177,16 @@ function renderStats() {
   const time = now();
   let total = 0;
   let used = 0;
-  let reserved = 0;
+  let todaySegments = 0;
+  let todayCards = 0;
   for (const machine of state.machines) {
     for (const gpu of machine.gpus) {
       total += 1;
-      const { current, upcoming } = gpuStatus(gpu, time);
-      if (current) used += 1;
-      if (upcoming) reserved += 1;
+      if (gpuStatus(gpu, time).current) used += 1;
     }
+    const summary = todaySummary(machine);
+    todaySegments += summary.groups;
+    todayCards += summary.cards;
   }
   const free = total - used;
 
@@ -194,17 +204,12 @@ function renderStats() {
     <div class="stat-card free">
       <div class="stat-label">空闲可用</div>
       <div class="stat-value">${free}<small>张</small></div>
-      <div class="stat-hint">支持一次申请 1 / 2 / 4 / 8 张</div>
+      <div class="stat-hint">未预约的空档支持直接占用</div>
     </div>
     <div class="stat-card reserved">
-      <div class="stat-label">已预约</div>
-      <div class="stat-value">${reserved}<small>张</small></div>
-      <div class="stat-hint">最多可提前 24 小时预约</div>
-    </div>
-    <div class="stat-card queue">
-      <div class="stat-label">排队中</div>
-      <div class="stat-value">${state.queue.length}<small>人</small></div>
-      <div class="stat-hint">空闲卡释出后自动分配</div>
+      <div class="stat-label">今日预约</div>
+      <div class="stat-value">${todaySegments}<small>段</small></div>
+      <div class="stat-hint">共 ${todayCards} 卡次 · 可提前 48 小时预约</div>
     </div>
   `;
 }
@@ -234,26 +239,192 @@ function renderMachines() {
       const free = machine.gpus.length - used - reserved;
       const badgeClass = used === 0 ? 'free' : used === machine.gpus.length ? 'full' : 'busy';
       return `
-        <article class="machine-card" data-machine-id="${machine.id}">
-          <header class="machine-head">
-            <div class="machine-title">
-              <h3>${escapeHtml(machine.name)}</h3>
-              <p>${escapeHtml(machine.model)} · ${escapeHtml(machine.ip)}</p>
-            </div>
-            <span class="machine-badge ${badgeClass}">${used} / ${machine.gpus.length} 使用中</span>
-          </header>
-          <div class="gpu-grid">${machine.gpus.map((gpu) => renderSlot(machine, gpu)).join('')}</div>
-          <footer class="machine-foot">
-            <span>${free} 卡空闲${reserved ? ` · ${reserved} 卡已预约` : ''} · 到期自动释放</span>
-            <button type="button" class="mini-btn" data-action="book-any" data-machine="${machine.id}">
-              ${free > 0 ? '申请空闲卡' : '排队等候'}
-            </button>
-          </footer>
+        <article class="machine-row" data-machine-id="${machine.id}">
+          <div class="machine-side">
+            <header class="machine-head">
+              <div class="machine-title">
+                <h3>${escapeHtml(machine.name)}</h3>
+                <p>${escapeHtml(machine.model)} · ${escapeHtml(machine.ip)}</p>
+              </div>
+              <span class="machine-badge ${badgeClass}">${used} / ${machine.gpus.length} 使用中</span>
+            </header>
+            <div class="gpu-grid">${machine.gpus.map((gpu) => renderSlot(machine, gpu)).join('')}</div>
+            <footer class="machine-foot">
+              <span>${free} 卡空闲${reserved ? ` · ${reserved} 卡已预约` : ''} · 到点自动释放</span>
+              <button type="button" class="mini-btn" data-action="book-any" data-machine="${machine.id}">
+                预约 / 占用
+              </button>
+            </footer>
+          </div>
+          ${renderTimeline(machine)}
         </article>
       `;
     })
     .join('');
 }
+
+/* ------------------------------ 当天预约时间轴 ------------------------------ */
+
+function fmtHM(timestamp) {
+  const date = new Date(timestamp);
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+// 同一个人固定同一色相，方便一眼看出「谁占了多久」；色相取自一组彼此拉开距离的值
+const PERSON_HUES = [196, 22, 268, 142, 332, 48, 218, 96, 306, 12, 176, 240];
+const hueAssign = (() => {
+  try {
+    const raw = JSON.parse(localStorage.getItem('gpu.hues') || '{}');
+    return raw && typeof raw === 'object' ? raw : {};
+  } catch (err) {
+    return {};
+  }
+})();
+
+// 新出现的人优先拿还没被占用的色相，避免两个人撞色
+function personHue(name) {
+  const key = String(name);
+  const known = hueAssign[key];
+  if (Number.isInteger(known)) return PERSON_HUES[known % PERSON_HUES.length];
+  const used = new Set(Object.values(hueAssign).map((index) => index % PERSON_HUES.length));
+  let slot = PERSON_HUES.findIndex((_, index) => !used.has(index));
+  if (slot === -1) slot = Object.keys(hueAssign).length % PERSON_HUES.length;
+  hueAssign[key] = slot;
+  try {
+    localStorage.setItem('gpu.hues', JSON.stringify(hueAssign));
+  } catch (err) {
+    /* 存储不可用时仅当前会话有效 */
+  }
+  return PERSON_HUES[slot];
+}
+
+// 当天时间窗内的预约统计：几组（段）、几张卡次
+function todaySummary(machine) {
+  const dayStart = todayStart();
+  const dayEnd = dayStart + DAY;
+  const groups = new Set();
+  let cards = 0;
+  for (const gpu of machine.gpus) {
+    for (const booking of gpu.bookings) {
+      if (booking.endAt <= dayStart || booking.startAt >= dayEnd) continue;
+      groups.add(booking.groupId || booking.id);
+      cards += 1;
+    }
+  }
+  return { groups: groups.size, cards };
+}
+
+// 逐卡展开当天预约：一张卡一行，方便直接看出“哪张卡、从几点到几点”
+function gpuLanes(machine) {
+  const dayStart = todayStart();
+  const dayEnd = dayStart + DAY;
+  let total = 0;
+  const lanes = machine.gpus.map((gpu) => {
+    const items = gpu.bookings
+      .filter((booking) => booking.endAt > dayStart && booking.startAt < dayEnd)
+      .sort((a, b) => a.startAt - b.startAt)
+      .map((booking) => {
+        total += 1;
+        return {
+          id: booking.groupId || booking.id,
+          user: booking.user,
+          note: booking.note || '',
+          claimed: Boolean(booking.claimed),
+          count: booking.count || 1,
+          startAt: booking.startAt,
+          endAt: booking.endAt,
+        };
+      });
+    return { gpuId: gpu.id, items };
+  });
+  return { dayStart, dayEnd, lanes, total };
+}
+
+function renderTimeline(machine) {
+  const { dayStart, dayEnd, lanes, total } = gpuLanes(machine);
+  const time = now();
+  const nowLeft = Math.min(100, Math.max(0, ((time - dayStart) / DAY) * 100));
+  const date = new Date(dayStart);
+  const dateLabel = `${date.getMonth() + 1}月${pad(date.getDate())}日 ${WEEKDAYS[date.getDay()]}`;
+
+  const ruler = Array.from({ length: 9 }, (_, i) => i * 3)
+    .map((hour) => {
+      const align = hour === 0 ? 'start' : hour === 24 ? 'end' : 'mid';
+      return `<span class="tl-tick ${align}" style="left:${(hour / 24) * 100}%">${pad(hour)}:00</span>`;
+    })
+    .join('');
+
+  const rowLabels = lanes
+    .map((lane) => `<span class="tl-gpu-label">卡 ${lane.gpuId}</span>`)
+    .join('');
+
+  const rows = lanes
+    .map((lane) => {
+      const bars = lane.items
+        .map((seg) => {
+          const clipStart = Math.max(seg.startAt, dayStart);
+          const clipEnd = Math.min(seg.endAt, dayEnd);
+          const left = ((clipStart - dayStart) / DAY) * 100;
+          const width = Math.max(0.6, ((clipEnd - clipStart) / DAY) * 100);
+          const running = seg.startAt <= time && seg.endAt > time;
+          const past = seg.endAt <= time;
+          const mine = isMine({ groupId: seg.id, claimed: seg.claimed, user: seg.user });
+          const range = `${seg.startAt < dayStart ? '…' : ''}${fmtHM(clipStart)}–${fmtHM(
+            clipEnd
+          )}${seg.endAt > dayEnd ? '…' : ''}`;
+          // 窄条放不下文字时逐级收敛：先去掉时间，再只留色块，完整信息走 title
+          const hours = (clipEnd - clipStart) / HOUR;
+          const compact = hours < 4 ? ' compact' : '';
+          const tiny = hours < 1 ? ' tiny' : '';
+          const title = `${seg.user}${seg.note ? '｜' + seg.note : ''}｜${range}｜${
+            seg.count > 1 ? `同组 ${seg.count} 卡` : '单卡'
+          }`;
+          return `
+            <button type="button" class="tl-bar${running ? ' running' : ''}${past ? ' past' : ''}${
+            mine ? ' mine' : ''
+          }${compact}${tiny}" style="left:${left.toFixed(3)}%;width:${width.toFixed(
+            3
+          )}%;--h:${personHue(seg.user)}" data-action="group" data-machine="${
+            machine.id
+          }" data-group="${escapeHtml(seg.id)}" title="${escapeHtml(title)}">
+              <span class="tl-bar-name">${escapeHtml(seg.user)}${mine ? '<i class="me-tag">我</i>' : ''}</span>
+              <span class="tl-bar-meta">×${seg.count} · ${range}</span>
+            </button>`;
+        })
+        .join('');
+      return `<div class="tl-lane">${bars}</div>`;
+    })
+    .join('');
+
+  return `
+    <div class="machine-tl">
+      <header class="tl-head">
+        <div>
+          <h4>今日预约</h4>
+          <p>${dateLabel} · 00:00 – 24:00 · 现在 ${fmtHM(time)}</p>
+        </div>
+        <span class="tl-count">${total ? `${total} 条 · 每行一张卡` : '今日空闲'}</span>
+      </header>
+      <div class="tl-scroll">
+        <div class="tl-chart">
+          <span class="tl-gutter-head"></span>
+          <div class="tl-ruler">${ruler}</div>
+          <div class="tl-gutter">${rowLabels}</div>
+          <div class="tl-lanes">
+            ${rows}
+            ${total ? '' : '<div class="tl-empty">今天还没有预约，空档可直接点击左侧空闲卡占用</div>'}
+            <div class="tl-now" style="left:${nowLeft.toFixed(3)}%"></div>
+          </div>
+        </div>
+      </div>
+      <footer class="tl-foot">
+        <span class="tl-legend">每行一张卡，条形长度即占用时段；灰色为已过期，点击条形可查看整组详情</span>
+        <span class="tl-tip">每天 24:00 自动刷新当天预约</span>
+      </footer>
+    </div>
+  `;
+}
+
 
 function renderSlot(machine, gpu) {
   const { current, upcoming } = gpuStatus(gpu, now());
@@ -282,16 +453,15 @@ function renderSlot(machine, gpu) {
         <div class="slot-top"><span class="slot-name">卡 ${gpu.id}</span><span class="dot"></span></div>
         <div class="slot-main">已预约</div>
         <div class="slot-sub reserve-wait" data-reserve-start="${upcoming.startAt}">${fmtWait(upcoming.startAt - now())}后开始</div>
-        <div class="slot-sub">${escapeHtml(upcoming.user)}${mine ? '<span class="me-tag">我</span>' : ''} · ${fmtClock(upcoming.startAt)}</div>
+        <div class="slot-sub">${escapeHtml(upcoming.user)}${mine ? '<span class="me-tag">我</span>' : ''}</div>
       </button>
     `;
   }
 
   return `
-    <button type="button" class="gpu-slot free" data-action="book" data-machine="${machine.id}" data-gpu="${gpu.id}">
+    <button type="button" class="gpu-slot free" data-action="book" data-machine="${machine.id}" data-gpu="${gpu.id}" title="点击申请这张卡">
       <div class="slot-top"><span class="slot-name">卡 ${gpu.id}</span><span class="dot"></span></div>
       <div class="slot-main">空闲</div>
-      <div class="slot-sub">点击申请</div>
     </button>
   `;
 }
@@ -339,8 +509,8 @@ function renderApplyPanel(machine) {
     })
     .join('');
 
-  const startLabel = draft.startMode === 'later' ? (draft.startAt ? `${fmtClock(draft.startAt)} 起` : '待选择开始时间') : '立即开始';
-  const endLabel = draft.durationMs > 0 ? `${fmtClock(start + draft.durationMs)} 自动释放` : '未设置时长';
+  const startLabel = draft.startMode === 'later' ? (draft.startAt ? `${fmtWhen(draft.startAt)} 起` : '待选择开始时间') : '立即开始';
+  const endLabel = draft.durationMs > 0 ? `${fmtWhen(start + draft.durationMs)} 自动释放` : '未设置时长';
   const summary = draft.gpuIds.length
     ? `已选 ${draft.gpuIds.length} 张 · 卡 ${draft.gpuIds.join('、')} · ${startLabel}，${endLabel}`
     : `该时段可用 ${freeIds.size} 张卡，请在上方点选具体卡`;
@@ -383,9 +553,9 @@ function renderApplyPanel(machine) {
             ).join('')}
           </div>
           <div class="custom-row">
-            <input type="number" id="draftMinutes" min="5" max="10080"
+            <input type="number" id="draftMinutes" min="5" max="2880"
               value="${escapeHtml(draft.customMinutes)}" placeholder="自定义">
-            <span>min（5 ~ 10080）</span>
+            <span>min（5 ~ 2880）</span>
           </div>
         </div>
         <div class="apply-field">
@@ -398,7 +568,7 @@ function renderApplyPanel(machine) {
           </div>
           <div class="custom-row" ${draft.startMode === 'later' ? '' : 'hidden'}>
             <button type="button" class="time-trigger" data-action="open-time-picker">
-              <span class="time-trigger-value">${draft.startAt ? fmtClock(draft.startAt) : '选择开始时间'}</span>
+              <span class="time-trigger-value">${draft.startAt ? fmtWhen(draft.startAt) : '选择开始时间'}</span>
               <span class="time-trigger-hint">滑动选择</span>
             </button>
           </div>
@@ -514,20 +684,31 @@ let pickerDates = [];
 function wheelDates() {
   const first = new Date(now());
   first.setHours(0, 0, 0, 0);
-  const last = new Date(now() + MAX_ADVANCE);
+  const last = new Date(now() + maxAdvance());
   last.setHours(0, 0, 0, 0);
   const list = [];
   for (let time = first.getTime(); time <= last.getTime(); time += DAY) list.push(time);
   return list;
 }
 
+const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+
+// 预约时间统一写成「11月04日 周三 16:10」，避免 11-04 这种缩写看不懂
+function fmtWhen(timestamp) {
+  const date = new Date(timestamp);
+  return `${date.getMonth() + 1}月${pad(date.getDate())}日 ${WEEKDAYS[date.getDay()]} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 function wheelDateLabel(timestamp) {
   const today = new Date(now());
   today.setHours(0, 0, 0, 0);
   const diff = Math.round((timestamp - today.getTime()) / DAY);
-  const tag = diff === 0 ? '今天' : diff === 1 ? '明天' : diff === 2 ? '后天' : '';
   const date = new Date(timestamp);
-  return `${tag ? `${tag} · ` : ''}${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  const text = `${date.getMonth() + 1}月${pad(date.getDate())}日`;
+  if (diff === 0) return `今天 · ${text}`;
+  if (diff === 1) return `明天 · ${text}`;
+  if (diff === 2) return `后天 · ${text}`;
+  return `${text} ${WEEKDAYS[date.getDay()]}`;
 }
 
 function renderWheelColumn(key, items, index) {
@@ -566,6 +747,9 @@ function openTimePicker() {
           </div>
           <button type="button" class="icon-btn" data-wheel-close aria-label="关闭">×</button>
         </header>
+        <div class="wheel-labels" aria-hidden="true">
+          <span>日期</span><span>小时</span><span>分钟</span>
+        </div>
         <div class="wheel-body">
           <div class="wheel-band" aria-hidden="true"></div>
           <div class="wheel-cols">
@@ -575,7 +759,7 @@ function openTimePicker() {
           </div>
         </div>
         <footer class="wheel-foot">
-          <span class="wheel-tip">最多可提前 24 小时，松手自动吸附</span>
+          <span class="wheel-tip">最多可提前 48 小时</span>
           <div class="wheel-actions">
             <button type="button" class="ghost-btn small" data-wheel-close>取消</button>
             <button type="button" class="primary-btn small" data-wheel-confirm>确定</button>
@@ -622,15 +806,15 @@ function pickerValue() {
 function updatePickerPreview() {
   const preview = els.modalRoot.querySelector('[data-wheel-preview]');
   const value = pickerValue();
-  if (preview) preview.textContent = value ? `${fmtClock(value)} 开始` : '';
+  if (preview) preview.textContent = value ? `${fmtWhen(value)} 开始` : '';
 }
 
 function confirmTimePicker() {
   if (!draft) return;
   const value = pickerValue();
   if (!value) return closeTimePicker();
-  // 超出「当前时刻 ~ 24 小时后」时夹到边界，避免白选
-  draft.startAt = Math.min(now() + MAX_ADVANCE, Math.max(now(), value));
+  // 超出「当前时刻 ~ 48 小时后」时夹到边界，避免白选
+  draft.startAt = Math.min(now() + maxAdvance(), Math.max(now(), value));
   closeTimePicker();
   refreshApplyModal();
 }
@@ -736,10 +920,11 @@ function onPanelClick(event) {
   }
   if (action === 'draft-start-mode') {
     draft.startMode = trigger.dataset.mode;
-    // 与滑轮 5 分钟刻度对齐，避免入口时间和弹层选中项差 1 分钟
-    if (draft.startMode === 'later' && !(draft.startAt > now())) {
+    // 与滑轮 5 分钟刻度对齐，避免入口时间和抽屉选中项差几分钟
+    if (draft.startMode === 'later') {
       const step = MINUTE_STEP * 60 * 1000;
-      draft.startAt = Math.ceil((now() + HOUR) / step) * step;
+      const base = draft.startAt > now() ? draft.startAt : now() + HOUR;
+      draft.startAt = Math.ceil(base / step) * step;
     }
     refreshApplyModal();
     return;
@@ -757,7 +942,7 @@ function applyQuickCount(count) {
   const { start, end } = draftWindow();
   const freeIds = machine.gpus.filter((gpu) => isGpuFreeIn(gpu, start, end)).map((gpu) => gpu.id);
   if (!freeIds.length) {
-    toast('该时段没有可用卡，可调整开始时间或加入排队', 'error');
+    toast('该时段没有可用卡，请调整开始时间或卡数', 'error');
     return;
   }
 
@@ -847,8 +1032,8 @@ async function submitDraft() {
     toast('请至少选择一张卡', 'error');
     return;
   }
-  if (!(draft.durationMs >= 5 * 60000 && draft.durationMs <= 7 * DAY)) {
-    toast('占用时长需在 5 分钟到 7 天之间', 'error');
+  if (!(draft.durationMs >= MIN_DURATION && draft.durationMs <= MAX_DURATION)) {
+    toast('占用时长需在 5 分钟到 48 小时之间', 'error');
     return;
   }
 
@@ -858,8 +1043,8 @@ async function submitDraft() {
       toast('请选择预约开始时间', 'error');
       return;
     }
-    if (draft.startAt < now() - 60000 || draft.startAt > now() + MAX_ADVANCE) {
-      toast('最多只能提前 24 小时预约', 'error');
+    if (draft.startAt < now() - 60000 || draft.startAt > now() + maxAdvance()) {
+      toast('最多只能提前 48 小时预约', 'error');
       return;
     }
     startAt = draft.startAt;
@@ -906,66 +1091,6 @@ async function submitDraft() {
   }
 }
 
-// 估算队列项最早能凑齐卡的时间：必须在同一台节点内凑够 gpuCount 张
-function queueEta(entry) {
-  const targets =
-    entry.machineId === 'any' ? state.machines : state.machines.filter((item) => item.id === entry.machineId);
-  const need = entry.gpuCount || 1;
-  const time = now();
-  let best = null;
-  targets.forEach((machine) => {
-    if (machine.gpus.length < need) return;
-    const times = machine.gpus
-      .map((gpu) => {
-        const ends = gpu.bookings.filter((b) => b.endAt > time).map((b) => b.endAt);
-        return ends.length ? Math.max(...ends) : time;
-      })
-      .sort((a, b) => a - b);
-    const eta = times[need - 1];
-    if (best === null || eta < best) best = eta;
-  });
-  return best;
-}
-
-function renderQueue() {
-  els.queueCount.textContent = String(state.queue.length);
-
-  if (!state.queue.length) {
-    els.queueList.innerHTML = `
-      <div class="queue-empty">
-        当前无人排队
-        <span>目标节点被占满时可加入队列等候<br>空闲卡释出后按顺序自动分配</span>
-      </div>
-    `;
-    return;
-  }
-
-  els.queueList.innerHTML = state.queue
-    .map((entry, index) => {
-      const mine = isMine(entry);
-      const target =
-        entry.machineId === 'any'
-          ? `任一节点 · ${entry.gpuCount || 1} 卡`
-          : `${machineLabel(entry.machineId)} · ${entry.gpuCount || 1} 卡`;
-      return `
-        <div class="queue-item ${mine ? 'mine' : ''}">
-          <span class="rank">${index + 1}</span>
-          <div class="queue-info">
-            <div class="queue-user">${escapeHtml(entry.user)}${mine ? '<span class="me-tag">我</span>' : ''}</div>
-            <div class="queue-target" title="${escapeHtml(target)}">${escapeHtml(target)}</div>
-            <div class="queue-meta">${fmtDuration(entry.durationMs)} · 已等 <span class="queue-wait" data-since="${entry.createdAt}">${fmtWait(now() - entry.createdAt)}</span></div>
-            <div class="queue-meta queue-eta">${(() => {
-              const eta = queueEta(entry);
-              return eta ? `最早 ${fmtClock(eta)} 空出 ${entry.gpuCount || 1} 卡` : '等待空闲卡释出';
-            })()}</div>
-          </div>
-          ${mine ? `<button type="button" class="link-btn" data-cancel-queue="${entry.id}">取消</button>` : ''}
-        </div>
-      `;
-    })
-    .join('');
-}
-
 function tick() {
   const current = now();
 
@@ -990,10 +1115,6 @@ function tick() {
   document.querySelectorAll('.reserve-wait[data-reserve-start]').forEach((el) => {
     const start = Number(el.dataset.reserveStart);
     el.textContent = start > current ? `${fmtWait(start - current)}后开始` : '即将开始';
-  });
-
-  document.querySelectorAll('.queue-wait[data-since]').forEach((el) => {
-    el.textContent = fmtWait(current - Number(el.dataset.since));
   });
 
   checkReminders(current);
@@ -1086,33 +1207,10 @@ function onMachineClick(event) {
     openApply(machineId, gpuIndex);
   } else if (action === 'detail') {
     openCardDetail(machineId, gpuIndex);
+  } else if (action === 'group') {
+    openGroupDetail(machineId, trigger.dataset.group);
   } else if (action === 'book-any') {
-    const machine = findMachine(machineId);
-    if (!machine) return;
-    const time = now();
-    const hasFree = machine.gpus.some((gpu) => isGpuFreeIn(gpu, time, time + selectedDuration));
-    if (hasFree) openApply(machineId, null);
-    else openQueue(machineId);
-  }
-}
-
-async function onQueueClick(event) {
-  const btn = event.target.closest('[data-cancel-queue]');
-  if (!btn) return;
-  if (!me) {
-    askUser(() => cancelQueue(btn.dataset.cancelQueue));
-    return;
-  }
-  await cancelQueue(btn.dataset.cancelQueue);
-}
-
-async function cancelQueue(id) {
-  try {
-    await fetchJson('/queue/cancel', { user: me, id, token: ownerTokenOf(id) });
-    toast('已取消排队');
-    await poll();
-  } catch (err) {
-    toast(err.message, 'error');
+    openApply(machineId, null);
   }
 }
 
@@ -1123,7 +1221,7 @@ function askUser(onSaved) {
       <div class="modal-head">
         <div>
           <h3>填写使用人</h3>
-          <p>用于申请、排队与释放算力卡的身份标识</p>
+          <p>用于预约、占用与释放算力卡的身份标识</p>
         </div>
         ${dismissible ? '<button type="button" class="icon-btn" data-close>×</button>' : ''}
       </div>
@@ -1169,135 +1267,6 @@ function askUser(onSaved) {
 }
 
 /* ------------------------------- 申请 / 预约 ------------------------------- */
-
-function openQueue(machineId) {
-  const machine = findMachine(machineId);
-  if (!machine) return;
-
-  let count = 1;
-  let duration = selectedDuration;
-
-  openModal(
-    `
-      <div class="modal-head">
-        <div>
-          <h3>排队等候</h3>
-          <p>${escapeHtml(machine.name)} · ${escapeHtml(machine.model)} · 共 ${machine.gpus.length} 卡</p>
-        </div>
-        <button type="button" class="icon-btn" data-close>×</button>
-      </div>
-      <div class="field">
-        <label>申请人</label>
-        <input type="text" id="queueUser" maxlength="20" autocomplete="off" value="${escapeHtml(me)}" placeholder="填写你的姓名，作为占用人">
-      </div>
-      <div class="field">
-        <label>申请卡数</label>
-        <div class="chips chips-4">
-          ${CARD_OPTIONS.map(
-            (value) => `<button type="button" class="chip ${value === 1 ? 'active' : ''}" data-count="${value}">${value} 张</button>`
-          ).join('')}
-        </div>
-      </div>
-      <div class="field">
-        <label>占用时长</label>
-        <div class="chips">
-          ${DURATION_OPTIONS.map((option) => `<button type="button" class="chip" data-ms="${option.ms}">${option.label}</button>`).join('')}
-        </div>
-        <div class="custom-row">
-          <input type="number" id="customMinutes" min="5" max="10080" placeholder="自定义分钟">
-          <span>分钟（5 分钟 ~ 7 天）</span>
-        </div>
-      </div>
-      <div class="field">
-        <label>用途（可选）</label>
-        <input type="text" id="bookingNote" maxlength="60" placeholder="例如：LLM 推理压测 · exp-12">
-      </div>
-      <div class="modal-note">当前节点没有足够的空闲卡，加入队列后系统会在卡片释出时按顺序自动分配。</div>
-      <div class="modal-actions">
-        <button type="button" class="ghost-btn" data-close>取消</button>
-        <button type="button" class="primary-btn" id="confirmBooking">加入排队</button>
-      </div>
-    `,
-    {
-      onMount(modal) {
-        const countChips = Array.from(modal.querySelectorAll('[data-count]'));
-        const chips = Array.from(modal.querySelectorAll('[data-ms]'));
-        const customInput = modal.querySelector('#customMinutes');
-
-        const syncChips = () => {
-          chips.forEach((chip) => chip.classList.toggle('active', Number(chip.dataset.ms) === duration));
-        };
-
-        countChips.forEach((chip) => {
-          chip.addEventListener('click', () => {
-            count = Number(chip.dataset.count);
-            countChips.forEach((item) => item.classList.toggle('active', item === chip));
-          });
-        });
-
-        chips.forEach((chip) => {
-          chip.addEventListener('click', () => {
-            duration = Number(chip.dataset.ms);
-            customInput.value = '';
-            syncChips();
-          });
-        });
-
-        customInput.addEventListener('input', () => {
-          const minutes = Number(customInput.value);
-          duration = Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes * 60000) : 0;
-          chips.forEach((chip) => chip.classList.remove('active'));
-        });
-
-        syncChips();
-
-        const confirmBtn = modal.querySelector('#confirmBooking');
-        confirmBtn.addEventListener('click', async () => {
-          const userInput = modal.querySelector('#queueUser');
-          const user = String(userInput.value || '').trim();
-          if (!user) {
-            toast('请填写申请人姓名', 'error');
-            userInput.focus();
-            return;
-          }
-          if (duration < 5 * 60 * 1000 || duration > 7 * DAY) {
-            toast('占用时长需在 5 分钟到 7 天之间', 'error');
-            return;
-          }
-
-          confirmBtn.disabled = true;
-          confirmBtn.textContent = '提交中…';
-          try {
-            const result = await fetchJson('/queue', {
-              user,
-              machineId,
-              count,
-              durationMs: duration,
-              note: modal.querySelector('#bookingNote').value.trim(),
-            });
-            // 排队 id 与分配后的 groupId 一致，凭证存下来才能释放/取消
-            rememberOwner(result.groupId || result.id, result.ownerToken);
-            askNotifyPermission();
-            me = user;
-            localStorage.setItem('gpu.user', user);
-            selectedDuration = duration;
-            closeModal();
-            if (result.booked) {
-              toast(`当前有可用卡，已直接分配：${result.machineName} · 卡 ${result.gpuIndexes.join('、')}`);
-            } else {
-              toast(`已加入排队，当前第 ${result.position} 位`);
-            }
-            poll();
-          } catch (err) {
-            toast(err.message, 'error');
-            confirmBtn.disabled = false;
-            confirmBtn.textContent = '加入排队';
-          }
-        });
-      },
-    }
-  );
-}
 
 /* --------------------------------- 卡片详情 -------------------------------- */
 
@@ -1362,8 +1331,8 @@ function openCardDetail(machineId, gpuIndex) {
         <button type="button" class="ghost-btn" data-close>关闭</button>
         ${
           mine
-            ? '<button type="button" class="danger-btn" id="releaseBtn">释放我的占用</button>'
-            : '<button type="button" class="primary-btn" id="queueBtn">排队等候</button>'
+            ? '<button type="button" class="danger-btn" id="releaseBtn">释放这次占用</button>'
+            : '<button type="button" class="primary-btn" id="reserveBtn">预约其他时段</button>'
         }
       </div>
     `,
@@ -1372,8 +1341,86 @@ function openCardDetail(machineId, gpuIndex) {
         const releaseBtn = modal.querySelector('#releaseBtn');
         if (releaseBtn) releaseBtn.addEventListener('click', () => openReleaseConfirm(machine, gpu, highlight));
 
-        const queueBtn = modal.querySelector('#queueBtn');
-        if (queueBtn) queueBtn.addEventListener('click', () => openQueue(machineId));
+        const reserveBtn = modal.querySelector('#reserveBtn');
+        if (reserveBtn)
+          reserveBtn.addEventListener('click', () => {
+            closeModal();
+            openApply(machineId, null);
+          });
+      },
+    }
+  );
+}
+
+// 时间轴上的条形：按整组预约查看详情，可直接释放
+function openGroupDetail(machineId, groupId) {
+  const machine = findMachine(machineId);
+  if (!machine) return;
+  // 按 groupId 在逐卡行里回收这一组占用的卡号
+  const { lanes } = gpuLanes(machine);
+  const gpus = [];
+  let seg = null;
+  for (const lane of lanes) {
+    const hit = lane.items.find((item) => item.id === groupId);
+    if (!hit) continue;
+    gpus.push(lane.gpuId);
+    if (!seg) seg = hit;
+  }
+  if (!seg) return;
+  seg.gpus = gpus.sort((a, b) => a - b);
+
+  const time = now();
+  const running = seg.startAt <= time && seg.endAt > time;
+  const mine = isMine({ groupId: seg.id, claimed: seg.claimed, user: seg.user });
+
+  openModal(
+    `
+      <div class="modal-head">
+        <div>
+          <h3>${escapeHtml(machine.name)} · ${seg.count} 卡预约</h3>
+          <p>${fmtWhen(seg.startAt)} → ${fmtWhen(seg.endAt)}</p>
+        </div>
+        <button type="button" class="icon-btn" data-close>×</button>
+      </div>
+      <div class="booking-owner">
+        <span class="avatar">${escapeHtml(seg.user.slice(0, 1))}</span>
+        <div>
+          <strong>${escapeHtml(seg.user)}${mine ? '<span class="me-tag">我</span>' : ''}</strong>
+          <small>${escapeHtml(seg.note || '未填写用途')}</small>
+        </div>
+      </div>
+      <div class="detail-grid">
+        <div class="detail-cell"><span>占用卡</span><strong>卡 ${seg.gpus.join('、')}</strong></div>
+        <div class="detail-cell"><span>时长</span><strong>${fmtDuration(seg.endAt - seg.startAt)}</strong></div>
+        <div class="detail-cell"><span>开始</span><strong>${fmtClock(seg.startAt)}</strong></div>
+        <div class="detail-cell"><span>${running ? '剩余时间' : '还有'}</span><strong>${
+          running
+            ? `<span class="timer" data-start="${seg.startAt}" data-end="${seg.endAt}">剩余 ${fmtRemain(
+                seg.endAt - time
+              )}</span>`
+            : fmtWait(seg.startAt - time)
+        }</strong></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="ghost-btn" data-close>关闭</button>
+        ${
+          mine
+            ? '<button type="button" class="danger-btn" id="releaseGroupBtn">释放这组预约</button>'
+            : '<button type="button" class="primary-btn" data-close>知道了</button>'
+        }
+      </div>
+    `,
+    {
+      onMount(modal) {
+        const btn = modal.querySelector('#releaseGroupBtn');
+        if (!btn) return;
+        btn.addEventListener('click', () =>
+          openReleaseConfirm(machine, { id: seg.gpus[0] }, {
+            groupId: seg.id,
+            count: seg.count,
+            gpuId: seg.gpus[0],
+          })
+        );
       },
     }
   );
@@ -1390,7 +1437,7 @@ function openReleaseConfirm(machine, gpu, booking) {
         </div>
         <button type="button" class="icon-btn" data-close>×</button>
       </div>
-      <p class="confirm-text">释放后该卡立即回到空闲池，排队中的用户会按顺序自动获得，此操作不可撤销。</p>
+      <p class="confirm-text">释放后这些卡立即回到空闲池，其他人可以预约或直接占用，此操作不可撤销。</p>
       <div class="modal-actions">
         <button type="button" class="ghost-btn" data-close>取消</button>
         <button type="button" class="danger-btn" id="confirmRelease">确认释放</button>
@@ -1406,6 +1453,7 @@ function openReleaseConfirm(machine, gpu, booking) {
               user: me,
               machineId: machine.id,
               gpuIndex: gpu.id,
+              groupId: booking.groupId || '',
               token: ownerTokenOf(booking.groupId),
             });
             closeModal();
@@ -1571,11 +1619,6 @@ async function fetchJson(pathname, body) {
 
 function findMachine(machineId) {
   return state.machines.find((machine) => machine.id === machineId);
-}
-
-function machineLabel(machineId) {
-  const machine = findMachine(machineId);
-  return machine ? machine.name : machineId;
 }
 
 function escapeHtml(value) {

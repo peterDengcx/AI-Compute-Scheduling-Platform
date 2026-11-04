@@ -12,8 +12,8 @@ const STATE_FILE = path.join(DATA_DIR, 'state.json');
 
 const GPU_PER_MACHINE = 8;
 const MIN_DURATION = 5 * 60 * 1000;
-const MAX_DURATION = 7 * 24 * 60 * 60 * 1000;
-const MAX_ADVANCE = 24 * 60 * 60 * 1000;
+const MAX_DURATION = 48 * 60 * 60 * 1000;
+const MAX_ADVANCE = 48 * 60 * 60 * 1000;
 const MAX_NOTE = 60;
 const CARD_CHOICES = [1, 2, 4, 8];
 
@@ -50,14 +50,13 @@ function createMachine(index, { ip, password, model }) {
 }
 
 function buildFreshState() {
-  return { machines: [], queue: [] };
+  return { machines: [] };
 }
 
 function isValidState(parsed) {
   return (
     parsed &&
     Array.isArray(parsed.machines) &&
-    Array.isArray(parsed.queue) &&
     parsed.machines.every(
       (machine) => Array.isArray(machine.gpus) && machine.gpus.every((gpu) => Array.isArray(gpu.bookings))
     )
@@ -68,7 +67,8 @@ function loadState() {
   try {
     if (fs.existsSync(STATE_FILE)) {
       const parsed = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-      if (isValidState(parsed)) return parsed;
+      // 旧数据里的 queue 字段直接丢弃，改为纯预约制
+      if (isValidState(parsed)) return { machines: parsed.machines };
     }
   } catch (err) {
     console.warn('[warn] 数据文件读取失败，使用空数据：', err.message);
@@ -143,12 +143,15 @@ function acquire(user, machineId, startAt, endAt, count, note, meta = {}) {
   return null;
 }
 
+// 只清理昨天及更早的记录；今天的记录保留到 24:00，方便前端展示当日完整时间轴
 function sweepExpired() {
-  const now = Date.now();
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const cutoff = today.getTime();
   let changed = false;
   for (const machine of state.machines) {
     for (const gpu of machine.gpus) {
-      const kept = gpu.bookings.filter((booking) => booking.endAt > now);
+      const kept = gpu.bookings.filter((booking) => booking.endAt > cutoff);
       if (kept.length !== gpu.bookings.length) {
         gpu.bookings = kept;
         changed = true;
@@ -158,39 +161,8 @@ function sweepExpired() {
   return changed;
 }
 
-// 按队列顺序，把当前空出来的卡自动分给等待中的用户
-function dispatchQueue() {
-  let changed = false;
-  let index = 0;
-  while (index < state.queue.length) {
-    const entry = state.queue[index];
-    const now = Date.now();
-    const target = entry.machineId === 'any' ? null : state.machines.find((m) => m.id === entry.machineId);
-    // 目标节点已被删除时清掉该排队项，避免永久堵塞队列
-    if (entry.machineId !== 'any' && !target) {
-      state.queue.splice(index, 1);
-      changed = true;
-      continue;
-    }
-    // 沿用排队项的 id / 凭证，排队人不用再操作就能拿到释放权限
-    const result = acquire(entry.user, entry.machineId, now, now + entry.durationMs, entry.gpuCount, entry.note, {
-      groupId: entry.id,
-      ownerToken: entry.ownerToken,
-    });
-    if (!result) {
-      index += 1;
-      continue;
-    }
-    state.queue.splice(index, 1);
-    changed = true;
-  }
-  return changed;
-}
-
 function refresh() {
-  let changed = sweepExpired();
-  if (dispatchQueue()) changed = true;
-  if (changed) save();
+  if (sweepExpired()) save();
 }
 
 /* ---------------------------------- 校验 ---------------------------------- */
@@ -205,7 +177,7 @@ function requireUser(body) {
 function requireDuration(body) {
   const ms = Number(body.durationMs);
   if (!Number.isFinite(ms) || ms < MIN_DURATION || ms > MAX_DURATION) {
-    throw new HttpError(400, '占用时长需在 5 分钟到 7 天之间');
+    throw new HttpError(400, '占用时长需在 5 分钟到 48 小时之间');
   }
   return Math.round(ms);
 }
@@ -222,7 +194,7 @@ function requireStart(body) {
   const startAt = Number(body.startAt);
   if (!Number.isFinite(startAt)) throw new HttpError(400, '开始时间不合法');
   if (startAt < now - 60 * 1000) throw new HttpError(400, '开始时间不能早于当前时间');
-  if (startAt > now + MAX_ADVANCE) throw new HttpError(400, '最多只能提前 24 小时预约');
+  if (startAt > now + MAX_ADVANCE) throw new HttpError(400, '最多只能提前 48 小时预约');
   return Math.max(startAt, now);
 }
 
@@ -286,7 +258,7 @@ function occupy(body) {
     const future = startAt > Date.now() + 5000;
     throw new HttpError(
       409,
-      future ? `该时段没有 ${count} 张可用卡，请调整开始时间或卡数` : `当前没有 ${count} 张可用卡，可以加入排队等候`
+      future ? `该时段没有 ${count} 张可用卡，请调整开始时间或卡数` : `当前没有 ${count} 张空闲卡，请改用预约`
     );
   }
   save();
@@ -302,71 +274,39 @@ function occupy(body) {
   };
 }
 
-function enqueue(body) {
-  const user = requireUser(body);
-  const machineId = parseMachineId(body);
-  const count = requireCount(body);
-  const durationMs = requireDuration(body);
-  const note = normalizeNote(body.note);
-
-  refresh();
-
-  if (state.queue.some((entry) => entry.user === user)) {
-    const queued = state.queue.find((entry) => entry.user === user);
-    const queuedMachine = state.machines.find((machine) => machine.id === queued.machineId);
-    const where = queued.machineId === 'any' ? '任一节点' : queuedMachine ? queuedMachine.name : queued.machineId;
-    throw new HttpError(409, `你已在「${where}」的排队中，请先在队列里取消`);
-  }
-
-  // 当前能否直接满足，能则不进队列
-  const now = Date.now();
-  const direct = acquire(user, machineId, now, now + durationMs, count, note);
-  if (direct) {
-    save();
-    return {
-      ok: true,
-      booked: true,
-      machineId: direct.machine.id,
-      machineName: direct.machine.name,
-      gpuIndexes: direct.gpuIds,
-      groupId: direct.groupId,
-      ownerToken: direct.ownerToken,
-    };
-  }
-
-  const id = crypto.randomUUID();
-  // 排队凭证：分配到卡后沿用同一个 token 作为释放凭证
-  const ownerToken = crypto.randomUUID();
-  state.queue.push({
-    id,
-    ownerToken,
-    user,
-    machineId,
-    gpuCount: count,
-    durationMs,
-    note,
-    createdAt: now,
-  });
-  save();
-  return { ok: true, booked: false, id, ownerToken, position: state.queue.length };
-}
-
 function release(body) {
   const user = requireUser(body);
   const machineId = parseMachineId(body);
   const gpuIndex = Number(body.gpuIndex);
-  if (machineId === 'any' || !Number.isInteger(gpuIndex)) throw new HttpError(400, '请指定要释放的卡');
+  const groupId = String(body.groupId || '');
+  if (machineId === 'any') throw new HttpError(400, '请指定要释放的卡');
+  if (!groupId && !Number.isInteger(gpuIndex)) throw new HttpError(400, '请指定要释放的卡');
 
   refresh();
 
   const machine = findMachine(machineId);
-  const gpu = machine.gpus.find((item) => item.id === gpuIndex);
-  if (!gpu) throw new HttpError(404, '卡不存在');
-  if (!gpu.bookings.length) throw new HttpError(409, '这张卡当前已是空闲状态');
-
   const now = Date.now();
-  const target =
-    gpu.bookings.find((booking) => booking.startAt <= now && booking.endAt > now) || gpu.bookings[0];
+  let target = null;
+  let gpu = null;
+
+  if (groupId) {
+    // 从时间轴点进来的预约：按 groupId 精确定位，避免误删同卡的其他时段
+    for (const item of machine.gpus) {
+      const hit = item.bookings.find((booking) => booking.groupId === groupId);
+      if (hit) {
+        target = hit;
+        gpu = item;
+        break;
+      }
+    }
+    if (!target) throw new HttpError(404, '这条预约已经结束或被释放');
+  } else {
+    gpu = machine.gpus.find((item) => item.id === gpuIndex);
+    if (!gpu) throw new HttpError(404, '卡不存在');
+    if (!gpu.bookings.length) throw new HttpError(409, '这张卡当前已是空闲状态');
+    target = gpu.bookings.find((booking) => booking.startAt <= now && booking.endAt > now) || gpu.bookings[0];
+  }
+
   // 有凭证的记录只认凭证，光知道姓名释放不了；早期无凭证的记录退回按姓名校验
   if (target.ownerToken) {
     if (target.ownerToken !== String(body.token || '')) {
@@ -391,24 +331,6 @@ function release(body) {
   refresh();
   save();
   return { ok: true, released, future: target.startAt > now };
-}
-
-function cancelQueue(body) {
-  const user = requireUser(body);
-  const id = String(body.id || '');
-  const index = state.queue.findIndex((entry) => entry.id === id);
-  if (index === -1) throw new HttpError(404, '排队记录不存在');
-  const entry = state.queue[index];
-  if (entry.ownerToken) {
-    if (entry.ownerToken !== String(body.token || '')) {
-      throw new HttpError(403, '这条排队只能由申请时的浏览器取消');
-    }
-  } else if (entry.user !== user) {
-    throw new HttpError(403, '只能取消自己的排队');
-  }
-  state.queue.splice(index, 1);
-  save();
-  return { ok: true };
 }
 
 function addMachine(body) {
@@ -464,7 +386,6 @@ function publicState() {
     maxAdvance: MAX_ADVANCE,
     cardChoices: CARD_CHOICES,
     machines: state.machines.map(publicMachine),
-    queue: state.queue.map(publicBooking),
   };
 }
 
@@ -512,12 +433,8 @@ async function handleApi(req, res, pathname) {
   switch (pathname) {
     case '/api/occupy':
       return sendJson(res, 200, occupy(body));
-    case '/api/queue':
-      return sendJson(res, 200, enqueue(body));
     case '/api/release':
       return sendJson(res, 200, release(body));
-    case '/api/queue/cancel':
-      return sendJson(res, 200, cancelQueue(body));
     case '/api/machines':
       return sendJson(res, 200, addMachine(body));
     default:
@@ -560,7 +477,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-// 每秒巡检：到点自动释放，并立即把释放出的卡分配给排队用户
+// 每秒巡检：到点自动释放；跨过 24:00 后清掉前一天的记录
 setInterval(() => {
   try {
     refresh();
