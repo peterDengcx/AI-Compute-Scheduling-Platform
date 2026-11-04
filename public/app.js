@@ -26,6 +26,9 @@ const els = {
   switchUser: document.getElementById('switchUser'),
   modalRoot: document.getElementById('modalRoot'),
   toast: document.getElementById('toast'),
+  futureGrid: document.getElementById('futureGrid'),
+  futureTabs: document.getElementById('futureTabs'),
+  futureRefresh: document.getElementById('futureRefresh'),
 };
 
 let state = { machines: [], gpuPerMachine: 8, cardChoices: CARD_OPTIONS, maxAdvance: DEFAULT_MAX_ADVANCE };
@@ -51,6 +54,8 @@ const reminded = new Set();
 let titleTimer = null;
 // 节点卡片内嵌申请面板的草稿状态
 let draft = null;
+// 未来预约视图选中的日期：0 今天、1 明天、2 后天
+let futureDay = 0;
 
 const now = () => Date.now() + clockOffset;
 const maxAdvance = () => state.maxAdvance || DEFAULT_MAX_ADVANCE;
@@ -90,6 +95,19 @@ function isMine(record) {
 (async function init() {
   els.addNode.addEventListener('click', () => openAddNode());
   els.machines.addEventListener('click', onMachineClick);
+  if (els.futureGrid) els.futureGrid.addEventListener('click', onMachineClick);
+  if (els.futureTabs) {
+    els.futureTabs.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-day]');
+      if (!button) return;
+      futureDay = Number(button.dataset.day) || 0;
+      els.futureTabs
+        .querySelectorAll('[data-day]')
+        .forEach((item) => item.classList.toggle('active', Number(item.dataset.day) === futureDay));
+      renderFuture();
+    });
+  }
+  if (els.futureRefresh) els.futureRefresh.addEventListener('click', refreshFuture);
   els.modalRoot.addEventListener('click', onPanelClick);
   els.modalRoot.addEventListener('input', onPanelInput);
   els.modalRoot.addEventListener('change', onPanelChange);
@@ -164,6 +182,7 @@ function render() {
   renderUser();
   renderStats();
   renderMachines();
+  renderFuture();
   tick();
 }
 
@@ -381,7 +400,7 @@ function renderTimeline(machine) {
             machine.id
           }" data-group="${escapeHtml(seg.id)}" title="${escapeHtml(title)}">
               <span class="tl-bar-name">${escapeHtml(seg.user)}${mine ? '<i class="me-tag">我</i>' : ''}</span>
-              <span class="tl-bar-meta">×${seg.count} · ${range}</span>
+              <span class="tl-bar-meta">${seg.count > 1 ? `×${seg.count} · ` : ''}${range}</span>
             </button>`;
         })
         .join('');
@@ -413,6 +432,125 @@ function renderTimeline(machine) {
   `;
 }
 
+
+/* ----------------------------- 未来两天预约卡片 ----------------------------- */
+
+const DAY_LABELS = ['今天', '明天', '后天'];
+
+function dayWindow(offset) {
+  const start = todayStart() + offset * DAY;
+  return { start, end: start + DAY };
+}
+
+// 把某一天的记录按「组」聚合到各节点：一次多卡预约在卡片里只出现一条
+function dayGroups(offset) {
+  const { start, end } = dayWindow(offset);
+  return state.machines.map((machine) => {
+    const groups = new Map();
+    for (const gpu of machine.gpus) {
+      for (const booking of gpu.bookings) {
+        if (booking.endAt <= start || booking.startAt >= end) continue;
+        const key = booking.groupId || booking.id;
+        let group = groups.get(key);
+        if (!group) {
+          group = {
+            id: key,
+            user: booking.user,
+            note: booking.note || '',
+            count: booking.count || 1,
+            startAt: booking.startAt,
+            endAt: booking.endAt,
+            gpus: [],
+          };
+          groups.set(key, group);
+        }
+        group.gpus.push(gpu.id);
+      }
+    }
+    const items = [...groups.values()].sort((a, b) => a.startAt - b.startAt);
+    return { machine, items };
+  });
+}
+
+function futureStateLabel(startAt, endAt, time) {
+  if (endAt <= time) return { cls: 'done', text: '已结束' };
+  if (startAt <= time) return { cls: 'running', text: '进行中' };
+  return { cls: '', text: '待开始' };
+}
+
+function renderFuture() {
+  if (!els.futureGrid) return;
+  if (!state.machines.length) {
+    els.futureGrid.innerHTML = '<div class="future-empty">还没有推理节点</div>';
+    return;
+  }
+  const { start, end } = dayWindow(futureDay);
+  const date = new Date(start);
+  const time = now();
+  const cards = dayGroups(futureDay)
+    .map(({ machine, items }) => {
+      const usedIds = new Set();
+      const rows = items
+        .map((item) => {
+          item.gpus.forEach((id) => usedIds.add(id));
+          const clipStart = Math.max(item.startAt, start);
+          const clipEnd = Math.min(item.endAt, end);
+          const range = `${item.startAt < start ? '…' : ''}${fmtHM(clipStart)}–${fmtHM(clipEnd)}${
+            item.endAt > end ? '…' : ''
+          }`;
+          const status = futureStateLabel(item.startAt, item.endAt, time);
+          const gpuList = [...item.gpus].sort((a, b) => a - b);
+          const mine = isMine({ groupId: item.id, user: item.user });
+          const title = `${item.user}${item.note ? '｜' + item.note : ''}｜${range}｜卡 ${gpuList.join('、')}`;
+          return `
+            <button type="button" class="future-item${status.cls === 'done' ? ' past' : ''}" style="--h:${personHue(
+            item.user
+          )}" data-action="group" data-machine="${machine.id}" data-group="${escapeHtml(
+            item.id
+          )}" title="${escapeHtml(title)}">
+              <span class="future-time">${range}</span>
+              <span class="future-user">${escapeHtml(item.user)}${mine ? '<i class="me-tag">我</i>' : ''}</span>
+              <span class="future-cards">卡 ${gpuList.join('、')} · ${
+            item.count > 1 ? `同组 ${item.count} 卡` : '单卡'
+          }</span>
+              <span class="future-state ${status.cls}">${status.text}</span>
+            </button>
+          `;
+        })
+        .join('');
+      const summary = items.length ? `${items.length} 组 · ${usedIds.size} 卡次` : '整天空闲';
+      return `
+        <article class="future-card">
+          <header class="future-card-head">
+            <div>
+              <h4>${escapeHtml(machine.name)}</h4>
+              <p>${escapeHtml(machine.model)} · ${escapeHtml(machine.ip)}</p>
+            </div>
+            <span class="future-badge${items.length ? '' : ' free'}">${summary}</span>
+          </header>
+          <div class="future-list">${
+            rows || `<div class="future-empty">这一天没有预约，${machine.gpus.length} 张卡都可用</div>`
+          }</div>
+        </article>
+      `;
+    })
+    .join('');
+
+  els.futureGrid.innerHTML = `
+    <div class="future-day">
+      <strong>${DAY_LABELS[futureDay]}</strong>
+      <span>${date.getMonth() + 1}月${date.getDate()}日 ${WEEKDAYS[date.getDay()]} · 00:00–24:00</span>
+    </div>
+    ${cards}
+  `;
+}
+
+async function refreshFuture() {
+  // 清掉签名，强制重绘一次，拿到最新预约
+  lastSignature = '';
+  await loadState();
+  toast('预约信息已刷新');
+}
 
 function renderSlot(machine, gpu) {
   const { current, upcoming } = gpuStatus(gpu, now());

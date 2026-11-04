@@ -316,15 +316,15 @@ body {
 .gpu-slot.soon .slot-sub { color: #b45309; }
 
 .gpu-slot.reserved {
-  border-color: rgba(13, 148, 136, 0.3);
+  border-color: rgba(139, 92, 246, 0.34);
   border-style: dashed;
-  background: linear-gradient(180deg, rgba(13, 148, 136, 0.09), rgba(13, 148, 136, 0.02));
+  background: linear-gradient(180deg, rgba(139, 92, 246, 0.11), rgba(139, 92, 246, 0.02));
 }
 
-.gpu-slot.reserved:hover { border-color: rgba(13, 148, 136, 0.6); }
-.gpu-slot.reserved .dot { background: #14b8a6; box-shadow: 0 0 0 3px rgba(20, 184, 166, 0.18); }
-.gpu-slot.reserved .slot-main { color: #0f766e; }
-.gpu-slot.reserved .slot-sub { color: rgba(15, 118, 110, 0.72); }
+.gpu-slot.reserved:hover { border-color: rgba(124, 58, 237, 0.66); }
+.gpu-slot.reserved .dot { background: #8b5cf6; box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.18); }
+.gpu-slot.reserved .slot-main { color: #6d28d9; }
+.gpu-slot.reserved .slot-sub { color: rgba(109, 40, 217, 0.72); }
 
 .group-tag {
   margin-left: 5px;
@@ -1193,6 +1193,133 @@ input::placeholder { color: var(--dim); }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes pop { from { opacity: 0; transform: translateY(10px) scale(0.98); } to { opacity: 1; transform: none; } }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+/* ------------------------------ 未来预约卡片 ------------------------------ */
+
+.future-section { margin-top: 28px; }
+
+.future-tools { display: flex; align-items: center; gap: 10px; flex: none; }
+
+.future-tabs { grid-template-columns: repeat(3, minmax(66px, 1fr)); }
+
+.future-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  gap: 14px;
+}
+
+.future-day {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 2px 4px 0;
+  font-size: 13px;
+  color: var(--dim);
+}
+
+.future-day strong { font-size: 15px; font-weight: 600; color: var(--text); }
+
+.future-card {
+  padding: 16px 18px 18px;
+  border-radius: 22px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.future-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.future-card-head h4 { margin: 0; font-size: 15.5px; font-weight: 600; }
+.future-card-head p { margin: 3px 0 0; font-size: 12px; color: var(--dim); }
+
+.future-badge {
+  flex: none;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: #6d28d9;
+  border: 1px solid rgba(139, 92, 246, 0.28);
+  background: rgba(139, 92, 246, 0.1);
+}
+
+.future-badge.free {
+  color: #047857;
+  border-color: rgba(16, 185, 129, 0.28);
+  background: rgba(16, 185, 129, 0.1);
+}
+
+.future-list { display: flex; flex-direction: column; gap: 7px; }
+
+.future-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "time user state"
+    "time cards state";
+  gap: 1px 12px;
+  padding: 8px 11px;
+  border-radius: 14px;
+  border: 1px solid hsl(var(--h, 262) 62% 88%);
+  background: hsl(var(--h, 262) 78% 97%);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.future-item:hover { transform: translateY(-1px); border-color: hsl(var(--h, 262) 58% 68%); }
+.future-item.past { opacity: 0.62; }
+
+.future-time {
+  grid-area: time;
+  align-self: center;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: hsl(var(--h, 262) 45% 32%);
+}
+
+.future-user {
+  grid-area: user;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.future-cards { grid-area: cards; font-size: 12px; color: var(--muted); }
+
+.future-state {
+  grid-area: state;
+  align-self: center;
+  justify-self: end;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  white-space: nowrap;
+  color: var(--muted);
+  border: 1px solid var(--line-strong);
+  background: #fff;
+}
+
+.future-state.running { color: #b91c1c; border-color: rgba(239, 68, 68, 0.32); background: rgba(239, 68, 68, 0.08); }
+.future-state.done { color: var(--dim); background: #f4f7fb; }
+
+.future-empty {
+  padding: 16px 8px;
+  font-size: 13px;
+  color: var(--dim);
+  text-align: center;
+}
 
 /* --------------------------------- 响应式 --------------------------------- */
 
