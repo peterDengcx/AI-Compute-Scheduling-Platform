@@ -277,22 +277,27 @@ function machineRow(machine, offset) {
   const time = now();
   let used = 0;
   let reserved = 0;
+  let freeNow = 0;
   for (const gpu of machine.gpus) {
     if (isToday) {
       const status = gpuStatus(gpu, time);
       if (status.current) used += 1;
-      else if (status.upcoming) reserved += 1;
+      else {
+        // 现在空闲就能立即占用，稍后的预约只影响可连续占用的时长
+        freeNow += 1;
+        if (status.upcoming) reserved += 1;
+      }
     } else if (dayBookings(gpu, offset).length) {
       reserved += 1;
     }
   }
-  const free = machine.gpus.length - used - reserved;
+  const free = isToday ? freeNow : machine.gpus.length - reserved;
   const badgeClass = used === machine.gpus.length ? 'full' : used || reserved ? 'busy' : 'free';
   const badgeText = isToday
     ? `${used} / ${machine.gpus.length} 使用中`
     : `${reserved} / ${machine.gpus.length} 已预约`;
   const footText = isToday
-    ? `${free} 卡空闲${reserved ? ` · ${reserved} 卡已预约` : ''} · 到点自动释放`
+    ? `${freeNow} 卡空闲可占${reserved ? ` · ${reserved} 卡稍后有约` : ''} · 到点自动释放`
     : `${reserved} 卡已预约 · ${free} 卡空闲 · 仅查看，今天可直接占用`;
   return `
     <article class="machine-row" data-machine-id="${machine.id}">
@@ -555,15 +560,17 @@ function renderSlot(machine, gpu, offset = 0) {
     `;
   }
 
+  // 现在空闲：即使今天稍后已有预约，也应该能立即占用（占用时长会自动收到那段预约开始前）
   if (upcoming) {
-    const mine = isMine(upcoming);
-    const title = `${upcoming.user}${upcoming.note ? '｜' + upcoming.note : ''}｜${fmtClock(upcoming.startAt)} 开始`;
+    const dayOffset = Math.floor((upcoming.startAt - todayStart()) / DAY);
+    const when =
+      dayOffset > 0 ? `${dayOffset === 1 ? '明天' : '后天'} ${fmtHM(upcoming.startAt)}` : fmtHM(upcoming.startAt);
+    const title = `现在空闲，可立即占用；${when} 起已预约给 ${upcoming.user}`;
     return `
-      <button type="button" class="gpu-slot reserved" data-action="detail" data-machine="${machine.id}" data-gpu="${gpu.id}" title="${escapeHtml(title)}">
+      <button type="button" class="gpu-slot free" data-action="book" data-machine="${machine.id}" data-gpu="${gpu.id}" title="${escapeHtml(title)}">
         <div class="slot-top"><span class="slot-name">卡 ${gpu.id}</span><span class="dot"></span></div>
-        <div class="slot-main">已预约</div>
-        <div class="slot-sub reserve-wait" data-reserve-start="${upcoming.startAt}">${fmtWait(upcoming.startAt - now())}后开始</div>
-        <div class="slot-sub">${escapeHtml(upcoming.user)}${mine ? '<span class="me-tag">我</span>' : ''}</div>
+        <div class="slot-main">空闲</div>
+        <div class="slot-sub">现在可占 · ${when} 起已约</div>
       </button>
     `;
   }
@@ -706,12 +713,24 @@ function openApply(machineId, presetGpu) {
   if (!machine) return;
 
   const time = now();
-  const durationMs = selectedDuration;
+  let durationMs = selectedDuration;
+  let customMinutes = '';
   let gpuIds = [];
 
   if (presetGpu != null) {
     const gpu = machine.gpus.find((item) => item.id === presetGpu);
-    if (gpu && isGpuFreeIn(gpu, time, time + durationMs)) gpuIds = [presetGpu];
+    const status = gpu ? gpuStatus(gpu, time) : null;
+    // 只要当前没有被占用就能立即占用；后面还有预约时，时长自动收到那段预约开始前
+    if (gpu && status && !status.current) {
+      if (status.upcoming) {
+        const room = status.upcoming.startAt - time;
+        let clipped = Math.floor(room / (30 * 60 * 1000)) * 30 * 60 * 1000;
+        if (clipped < MIN_DURATION) clipped = Math.floor(room / (60 * 1000)) * 60 * 1000;
+        durationMs = Math.max(MIN_DURATION, Math.min(durationMs, clipped));
+        if (durationMs !== selectedDuration) customMinutes = String(Math.round(durationMs / (60 * 1000)));
+      }
+      if (isGpuFreeIn(gpu, time, time + durationMs)) gpuIds = [presetGpu];
+    }
   }
 
   draft = {
@@ -722,7 +741,7 @@ function openApply(machineId, presetGpu) {
     startMode: 'now',
     startAt: time + HOUR,
     note: '',
-    customMinutes: '',
+    customMinutes,
   };
   openApplyModal();
 }
