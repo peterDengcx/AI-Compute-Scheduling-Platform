@@ -605,7 +605,8 @@ body {
 .chips-duration .chip { padding: 8px 2px; font-size: 13px; white-space: nowrap; }
 
 .apply-field .custom-row { margin-top: 8px; gap: 6px; }
-.apply-field .custom-row input { width: 72px; flex: none; padding: 9px 8px; }
+.apply-field .custom-row input[type="number"] { width: 72px; flex: none; padding: 9px 8px; }
+.apply-field .custom-row input[type="datetime-local"] { width: 100%; flex: 1; min-width: 0; padding: 9px 12px; }
 .apply-field .custom-row span { font-size: 12.5px; white-space: nowrap; }
 .apply-field .seg { margin-bottom: 0; }
 
