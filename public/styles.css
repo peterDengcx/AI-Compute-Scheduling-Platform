@@ -1194,7 +1194,7 @@ input::placeholder { color: var(--dim); }
 @keyframes pop { from { opacity: 0; transform: translateY(10px) scale(0.98); } to { opacity: 1; transform: none; } }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
-/* ------------------------------ 未来预约卡片 ------------------------------ */
+/* ------------------------------ 未来预约（复用节点视图） ------------------------------ */
 
 .future-section { margin-top: 28px; }
 
@@ -1202,123 +1202,20 @@ input::placeholder { color: var(--dim); }
 
 .future-tabs { grid-template-columns: repeat(3, minmax(66px, 1fr)); }
 
+/* 与上方节点列表同一套结构：一行一个节点，纵向排列 */
 .future-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
-  gap: 14px;
-}
-
-.future-day {
-  grid-column: 1 / -1;
   display: flex;
-  align-items: baseline;
-  gap: 10px;
-  padding: 2px 4px 0;
-  font-size: 13px;
-  color: var(--dim);
+  flex-direction: column;
+  gap: 18px;
 }
 
-.future-day strong { font-size: 15px; font-weight: 600; color: var(--text); }
+/* 未来日期的卡位只读：没有预约就整天空闲，不可点击 */
+.gpu-slot.readonly { cursor: default; }
 
-.future-card {
-  padding: 16px 18px 18px;
-  border-radius: 22px;
-  border: 1px solid var(--line);
-  background: var(--panel);
-  box-shadow: var(--shadow);
-}
-
-.future-card-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 12px;
-}
-
-.future-card-head h4 { margin: 0; font-size: 15.5px; font-weight: 600; }
-.future-card-head p { margin: 3px 0 0; font-size: 12px; color: var(--dim); }
-
-.future-badge {
-  flex: none;
-  padding: 3px 9px;
-  border-radius: 999px;
-  font-size: 12px;
-  color: #6d28d9;
-  border: 1px solid rgba(139, 92, 246, 0.28);
-  background: rgba(139, 92, 246, 0.1);
-}
-
-.future-badge.free {
-  color: #047857;
-  border-color: rgba(16, 185, 129, 0.28);
-  background: rgba(16, 185, 129, 0.1);
-}
-
-.future-list { display: flex; flex-direction: column; gap: 7px; }
-
-.future-item {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  grid-template-areas:
-    "time user state"
-    "time cards state";
-  gap: 1px 12px;
-  padding: 8px 11px;
-  border-radius: 14px;
-  border: 1px solid hsl(var(--h, 262) 62% 88%);
-  background: hsl(var(--h, 262) 78% 97%);
-  font-family: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition: border-color 0.15s ease, transform 0.15s ease;
-}
-
-.future-item:hover { transform: translateY(-1px); border-color: hsl(var(--h, 262) 58% 68%); }
-.future-item.past { opacity: 0.62; }
-
-.future-time {
-  grid-area: time;
-  align-self: center;
-  font-size: 12.5px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  color: hsl(var(--h, 262) 45% 32%);
-}
-
-.future-user {
-  grid-area: user;
-  font-size: 13.5px;
-  font-weight: 600;
-  color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.future-cards { grid-area: cards; font-size: 12px; color: var(--muted); }
-
-.future-state {
-  grid-area: state;
-  align-self: center;
-  justify-self: end;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 11.5px;
-  white-space: nowrap;
-  color: var(--muted);
-  border: 1px solid var(--line-strong);
-  background: #fff;
-}
-
-.future-state.running { color: #b91c1c; border-color: rgba(239, 68, 68, 0.32); background: rgba(239, 68, 68, 0.08); }
-.future-state.done { color: var(--dim); background: #f4f7fb; }
-
-.future-empty {
-  padding: 16px 8px;
-  font-size: 13px;
-  color: var(--dim);
-  text-align: center;
+.gpu-slot.readonly:hover {
+  transform: none;
+  border-color: rgba(16, 185, 129, 0.24);
+  box-shadow: none;
 }
 
 /* --------------------------------- 响应式 --------------------------------- */

@@ -54,8 +54,8 @@ const reminded = new Set();
 let titleTimer = null;
 // 节点卡片内嵌申请面板的草稿状态
 let draft = null;
-// 未来预约视图选中的日期：0 今天、1 明天、2 后天
-let futureDay = 0;
+// 未来预约视图选中的日期：0 今天、1 明天、2 后天（默认看明天）
+let futureDay = 1;
 
 const now = () => Date.now() + clockOffset;
 const maxAdvance = () => state.maxAdvance || DEFAULT_MAX_ADVANCE;
@@ -234,52 +234,79 @@ function renderStats() {
 }
 
 function renderMachines() {
+  els.machines.innerHTML = machineRows(0);
+}
+
+// 一套「节点卡片 + 当天时间轴」，offset=0 为今天，1/2 为明天/后天
+function machineRows(offset) {
   if (!state.machines.length) {
-    els.machines.innerHTML = `
+    return `
       <div class="empty-state">
         <strong>还没有推理节点</strong>
         <span>点击「新增节点」，录入 IP、密码与机型即可接入，节点编号从 0 开始自动生成。</span>
         <button type="button" class="primary-btn" data-action="add-node">新增节点</button>
       </div>
     `;
-    return;
   }
+  return state.machines.map((machine) => machineRow(machine, offset)).join('');
+}
 
-  els.machines.innerHTML = state.machines
-    .map((machine) => {
-      const time = now();
-      let used = 0;
-      let reserved = 0;
-      for (const gpu of machine.gpus) {
-        const status = gpuStatus(gpu, time);
-        if (status.current) used += 1;
-        else if (status.upcoming) reserved += 1;
-      }
-      const free = machine.gpus.length - used - reserved;
-      const badgeClass = used === 0 ? 'free' : used === machine.gpus.length ? 'full' : 'busy';
-      return `
-        <article class="machine-row" data-machine-id="${machine.id}">
-          <div class="machine-side">
-            <header class="machine-head">
-              <div class="machine-title">
-                <h3>${escapeHtml(machine.name)}</h3>
-                <p>${escapeHtml(machine.model)} · ${escapeHtml(machine.ip)}</p>
-              </div>
-              <span class="machine-badge ${badgeClass}">${used} / ${machine.gpus.length} 使用中</span>
-            </header>
-            <div class="gpu-grid">${machine.gpus.map((gpu) => renderSlot(machine, gpu)).join('')}</div>
-            <footer class="machine-foot">
-              <span>${free} 卡空闲${reserved ? ` · ${reserved} 卡已预约` : ''} · 到点自动释放</span>
-              <button type="button" class="mini-btn" data-action="book-any" data-machine="${machine.id}">
-                预约 / 占用
-              </button>
-            </footer>
+function machineRow(machine, offset) {
+  const isToday = offset === 0;
+  const time = now();
+  let used = 0;
+  let reserved = 0;
+  for (const gpu of machine.gpus) {
+    if (isToday) {
+      const status = gpuStatus(gpu, time);
+      if (status.current) used += 1;
+      else if (status.upcoming) reserved += 1;
+    } else if (dayBookings(gpu, offset).length) {
+      reserved += 1;
+    }
+  }
+  const free = machine.gpus.length - used - reserved;
+  const badgeClass = used === machine.gpus.length ? 'full' : used || reserved ? 'busy' : 'free';
+  const badgeText = isToday
+    ? `${used} / ${machine.gpus.length} 使用中`
+    : `${reserved} / ${machine.gpus.length} 已预约`;
+  const footText = isToday
+    ? `${free} 卡空闲${reserved ? ` · ${reserved} 卡已预约` : ''} · 到点自动释放`
+    : `${reserved} 卡已预约 · ${free} 卡空闲 · 仅查看，今天可直接占用`;
+  return `
+    <article class="machine-row" data-machine-id="${machine.id}">
+      <div class="machine-side">
+        <header class="machine-head">
+          <div class="machine-title">
+            <h3>${escapeHtml(machine.name)}</h3>
+            <p>${escapeHtml(machine.model)} · ${escapeHtml(machine.ip)}</p>
           </div>
-          ${renderTimeline(machine)}
-        </article>
-      `;
-    })
-    .join('');
+          <span class="machine-badge ${badgeClass}">${badgeText}</span>
+        </header>
+        <div class="gpu-grid">${machine.gpus.map((gpu) => renderSlot(machine, gpu, offset)).join('')}</div>
+        <footer class="machine-foot">
+          <span>${footText}</span>
+          ${
+            isToday
+              ? `<button type="button" class="mini-btn" data-action="book-any" data-machine="${machine.id}">
+                预约 / 占用
+              </button>`
+              : ''
+          }
+        </footer>
+      </div>
+      ${renderTimeline(machine, offset)}
+    </article>
+  `;
+}
+
+// 未来某天里这张卡当天的预约记录
+function dayBookings(gpu, offset) {
+  const dayStart = todayStart() + offset * DAY;
+  const dayEnd = dayStart + DAY;
+  return gpu.bookings
+    .filter((booking) => booking.endAt > dayStart && booking.startAt < dayEnd)
+    .sort((a, b) => a.startAt - b.startAt);
 }
 
 /* ------------------------------ 当天预约时间轴 ------------------------------ */
@@ -326,9 +353,9 @@ function todaySummary(machine) {
   return { groups: groups.size, cards };
 }
 
-// 逐卡展开当天预约：一张卡一行，方便直接看出“哪张卡、从几点到几点”
-function gpuLanes(machine) {
-  const dayStart = todayStart();
+// 逐卡展开某一天的预约：一张卡一行，方便直接看出“哪张卡、从几点到几点”
+function gpuLanes(machine, offset = 0) {
+  const dayStart = todayStart() + offset * DAY;
   const dayEnd = dayStart + DAY;
   let total = 0;
   const lanes = machine.gpus.map((gpu) => {
@@ -352,9 +379,10 @@ function gpuLanes(machine) {
   return { dayStart, dayEnd, lanes, total };
 }
 
-function renderTimeline(machine) {
-  const { dayStart, dayEnd, lanes, total } = gpuLanes(machine);
+function renderTimeline(machine, offset = 0) {
+  const { dayStart, dayEnd, lanes, total } = gpuLanes(machine, offset);
   const time = now();
+  const isToday = offset === 0;
   const nowLeft = Math.min(100, Math.max(0, ((time - dayStart) / DAY) * 100));
   const date = new Date(dayStart);
   const dateLabel = `${date.getMonth() + 1}月${pad(date.getDate())}日 ${WEEKDAYS[date.getDay()]}`;
@@ -378,8 +406,8 @@ function renderTimeline(machine) {
           const clipEnd = Math.min(seg.endAt, dayEnd);
           const left = ((clipStart - dayStart) / DAY) * 100;
           const width = Math.max(0.6, ((clipEnd - clipStart) / DAY) * 100);
-          const running = seg.startAt <= time && seg.endAt > time;
-          const past = seg.endAt <= time;
+          const running = isToday && seg.startAt <= time && seg.endAt > time;
+          const past = isToday && seg.endAt <= time;
           const mine = isMine({ groupId: seg.id, claimed: seg.claimed, user: seg.user });
           const range = `${seg.startAt < dayStart ? '…' : ''}${fmtHM(clipStart)}–${fmtHM(
             clipEnd
@@ -396,7 +424,7 @@ function renderTimeline(machine) {
             mine ? ' mine' : ''
           }${compact}${tiny}" style="left:${left.toFixed(3)}%;width:${width.toFixed(
             3
-          )}%;--h:${personHue(seg.user)}" data-action="group" data-machine="${
+          )}%;--h:${personHue(seg.user)}" data-action="group" data-day="${offset}" data-machine="${
             machine.id
           }" data-group="${escapeHtml(seg.id)}" title="${escapeHtml(title)}">
               <span class="tl-bar-name">${escapeHtml(seg.user)}${mine ? '<i class="me-tag">我</i>' : ''}</span>
@@ -412,8 +440,8 @@ function renderTimeline(machine) {
     <div class="machine-tl">
       <header class="tl-head">
         <div>
-          <h4>今日预约</h4>
-          <p>${dateLabel} · 00:00 – 24:00 · 现在 ${fmtHM(time)}</p>
+          <h4>${isToday ? '今日预约' : '当天预约'}</h4>
+          <p>${dateLabel} · 00:00 – 24:00${isToday ? ` · 现在 ${fmtHM(time)}` : ''}</p>
         </div>
       </header>
       <div class="tl-scroll">
@@ -423,8 +451,14 @@ function renderTimeline(machine) {
           <div class="tl-gutter">${rowLabels}</div>
           <div class="tl-lanes">
             ${rows}
-            ${total ? '' : '<div class="tl-empty">今天还没有预约，空档可直接点击左侧空闲卡占用</div>'}
-            <div class="tl-now" style="left:${nowLeft.toFixed(3)}%"></div>
+            ${
+              total
+                ? ''
+                : `<div class="tl-empty">${
+                    isToday ? '今天还没有预约，空档可直接点击左侧空闲卡占用' : '这一天还没有预约'
+                  }</div>`
+            }
+            ${isToday ? `<div class="tl-now" style="left:${nowLeft.toFixed(3)}%"></div>` : ''}
           </div>
         </div>
       </div>
@@ -433,116 +467,12 @@ function renderTimeline(machine) {
 }
 
 
-/* ----------------------------- 未来两天预约卡片 ----------------------------- */
+/* ------------------------- 未来两天预约（同一套节点视图） ------------------------- */
 
-const DAY_LABELS = ['今天', '明天', '后天'];
-
-function dayWindow(offset) {
-  const start = todayStart() + offset * DAY;
-  return { start, end: start + DAY };
-}
-
-// 把某一天的记录按「组」聚合到各节点：一次多卡预约在卡片里只出现一条
-function dayGroups(offset) {
-  const { start, end } = dayWindow(offset);
-  return state.machines.map((machine) => {
-    const groups = new Map();
-    for (const gpu of machine.gpus) {
-      for (const booking of gpu.bookings) {
-        if (booking.endAt <= start || booking.startAt >= end) continue;
-        const key = booking.groupId || booking.id;
-        let group = groups.get(key);
-        if (!group) {
-          group = {
-            id: key,
-            user: booking.user,
-            note: booking.note || '',
-            count: booking.count || 1,
-            startAt: booking.startAt,
-            endAt: booking.endAt,
-            gpus: [],
-          };
-          groups.set(key, group);
-        }
-        group.gpus.push(gpu.id);
-      }
-    }
-    const items = [...groups.values()].sort((a, b) => a.startAt - b.startAt);
-    return { machine, items };
-  });
-}
-
-function futureStateLabel(startAt, endAt, time) {
-  if (endAt <= time) return { cls: 'done', text: '已结束' };
-  if (startAt <= time) return { cls: 'running', text: '进行中' };
-  return { cls: '', text: '待开始' };
-}
-
+// 渲染选中的那一天：结构与「推理节点」完全一致，只按日期窗口取数
 function renderFuture() {
   if (!els.futureGrid) return;
-  if (!state.machines.length) {
-    els.futureGrid.innerHTML = '<div class="future-empty">还没有推理节点</div>';
-    return;
-  }
-  const { start, end } = dayWindow(futureDay);
-  const date = new Date(start);
-  const time = now();
-  const cards = dayGroups(futureDay)
-    .map(({ machine, items }) => {
-      const usedIds = new Set();
-      const rows = items
-        .map((item) => {
-          item.gpus.forEach((id) => usedIds.add(id));
-          const clipStart = Math.max(item.startAt, start);
-          const clipEnd = Math.min(item.endAt, end);
-          const range = `${item.startAt < start ? '…' : ''}${fmtHM(clipStart)}–${fmtHM(clipEnd)}${
-            item.endAt > end ? '…' : ''
-          }`;
-          const status = futureStateLabel(item.startAt, item.endAt, time);
-          const gpuList = [...item.gpus].sort((a, b) => a - b);
-          const mine = isMine({ groupId: item.id, user: item.user });
-          const title = `${item.user}${item.note ? '｜' + item.note : ''}｜${range}｜卡 ${gpuList.join('、')}`;
-          return `
-            <button type="button" class="future-item${status.cls === 'done' ? ' past' : ''}" style="--h:${personHue(
-            item.user
-          )}" data-action="group" data-machine="${machine.id}" data-group="${escapeHtml(
-            item.id
-          )}" title="${escapeHtml(title)}">
-              <span class="future-time">${range}</span>
-              <span class="future-user">${escapeHtml(item.user)}${mine ? '<i class="me-tag">我</i>' : ''}</span>
-              <span class="future-cards">卡 ${gpuList.join('、')} · ${
-            item.count > 1 ? `同组 ${item.count} 卡` : '单卡'
-          }</span>
-              <span class="future-state ${status.cls}">${status.text}</span>
-            </button>
-          `;
-        })
-        .join('');
-      const summary = items.length ? `${items.length} 组 · ${usedIds.size} 卡次` : '整天空闲';
-      return `
-        <article class="future-card">
-          <header class="future-card-head">
-            <div>
-              <h4>${escapeHtml(machine.name)}</h4>
-              <p>${escapeHtml(machine.model)} · ${escapeHtml(machine.ip)}</p>
-            </div>
-            <span class="future-badge${items.length ? '' : ' free'}">${summary}</span>
-          </header>
-          <div class="future-list">${
-            rows || `<div class="future-empty">这一天没有预约，${machine.gpus.length} 张卡都可用</div>`
-          }</div>
-        </article>
-      `;
-    })
-    .join('');
-
-  els.futureGrid.innerHTML = `
-    <div class="future-day">
-      <strong>${DAY_LABELS[futureDay]}</strong>
-      <span>${date.getMonth() + 1}月${date.getDate()}日 ${WEEKDAYS[date.getDay()]} · 00:00–24:00</span>
-    </div>
-    ${cards}
-  `;
+  els.futureGrid.innerHTML = machineRows(futureDay);
 }
 
 async function refreshFuture() {
@@ -552,7 +482,46 @@ async function refreshFuture() {
   toast('预约信息已刷新');
 }
 
-function renderSlot(machine, gpu) {
+// 未来某天的卡位：有预约就显示使用人与时段，没有就是整天空闲（这一天只读）
+function renderDaySlot(machine, gpu, offset) {
+  const dayStart = todayStart() + offset * DAY;
+  const dayEnd = dayStart + DAY;
+  const list = dayBookings(gpu, offset);
+  if (!list.length) {
+    return `
+      <div class="gpu-slot free readonly" title="这一天没有预约，${machine.name} 的卡 ${gpu.id} 全天可用">
+        <div class="slot-top"><span class="slot-name">卡 ${gpu.id}</span><span class="dot"></span></div>
+        <div class="slot-main">空闲</div>
+        <div class="slot-sub">全天可用</div>
+      </div>
+    `;
+  }
+  const first = list[0];
+  const mine = isMine(first);
+  const groupTag = first.count > 1 ? `<span class="group-tag">×${first.count}</span>` : '';
+  const range = list
+    .map(
+      (booking) =>
+        `${booking.startAt < dayStart ? '…' : ''}${fmtHM(Math.max(booking.startAt, dayStart))}–${fmtHM(
+          Math.min(booking.endAt, dayEnd)
+        )}${booking.endAt > dayEnd ? '…' : ''}`
+    )
+    .join(' / ');
+  const title = `${first.user}${first.note ? '｜' + first.note : ''}｜${range}`;
+  return `
+    <button type="button" class="gpu-slot reserved" data-action="group" data-day="${offset}" data-machine="${
+    machine.id
+  }" data-group="${escapeHtml(first.groupId || first.id)}" title="${escapeHtml(title)}">
+      <div class="slot-top"><span class="slot-name">卡 ${gpu.id}${groupTag}</span><span class="dot"></span></div>
+      <div class="slot-main">${escapeHtml(first.user)}${mine ? '<span class="me-tag">我</span>' : ''}</div>
+      <div class="slot-sub">${range}</div>
+    </button>
+  `;
+}
+
+function renderSlot(machine, gpu, offset = 0) {
+  if (offset > 0) return renderDaySlot(machine, gpu, offset);
+
   const { current, upcoming } = gpuStatus(gpu, now());
 
   if (current) {
@@ -1334,7 +1303,7 @@ function onMachineClick(event) {
   } else if (action === 'detail') {
     openCardDetail(machineId, gpuIndex);
   } else if (action === 'group') {
-    openGroupDetail(machineId, trigger.dataset.group);
+    openGroupDetail(machineId, trigger.dataset.group, Number(trigger.dataset.day || 0));
   } else if (action === 'book-any') {
     openApply(machineId, null);
   }
@@ -1427,11 +1396,11 @@ function openCardDetail(machineId, gpuIndex) {
 }
 
 // 时间轴上的条形：按整组预约查看详情，可直接释放
-function openGroupDetail(machineId, groupId) {
+function openGroupDetail(machineId, groupId, offset = 0) {
   const machine = findMachine(machineId);
   if (!machine) return;
   // 按 groupId 在逐卡行里回收这一组占用的卡号
-  const { lanes } = gpuLanes(machine);
+  const { lanes } = gpuLanes(machine, offset);
   const gpus = [];
   let seg = null;
   for (const lane of lanes) {
