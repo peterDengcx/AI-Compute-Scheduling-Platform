@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>算力卡调度台 · GPU 自助申请与占用</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b1220'/%3E%3Crect x='4' y='4' width='10' height='10' rx='2.5' fill='%235eead4'/%3E%3Crect x='18' y='4' width='10' height='10' rx='2.5' fill='%23818cf8'/%3E%3Crect x='4' y='18' width='10' height='10' rx='2.5' fill='%23818cf8'/%3E%3Crect x='18' y='18' width='10' height='10' rx='2.5' fill='%2334d399'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="bg-glow" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="26" height="26">
+          <defs>
+            <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#5eead4"/>
+              <stop offset="1" stop-color="#818cf8"/>
+            </linearGradient>
+          </defs>
+          <rect x="3" y="3" width="11" height="11" rx="3" fill="url(#lg)"/>
+          <rect x="18" y="3" width="11" height="11" rx="3" fill="url(#lg)" opacity=".55"/>
+          <rect x="3" y="18" width="11" height="11" rx="3" fill="url(#lg)" opacity=".55"/>
+          <rect x="18" y="18" width="11" height="11" rx="3" fill="url(#lg)" opacity=".3"/>
+        </svg>
+      </span>
+      <div class="brand-text">
+        <h1>算力卡调度台</h1>
+        <p>GPU 自助申请 · 按卡占用 · 到点自动释放</p>
+      </div>
+    </div>
+    <div class="user-box">
+      <span class="avatar" id="userAvatar">–</span>
+      <span class="user-name" id="userName">未登录</span>
+      <button class="ghost-btn small" id="switchUser" type="button">切换</button>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="stats" id="stats" aria-label="资源概览"></section>
+
+    <div class="layout">
+      <section class="machines-section">
+        <div class="section-head">
+          <h2>机器列表</h2>
+          <span class="hint">点击空闲的卡即可申请占用，点击占用中的卡可查看详情</span>
+        </div>
+        <div class="machine-grid" id="machines"></div>
+      </section>
+
+      <aside class="queue-panel">
+        <div class="section-head compact">
+          <h2>排队队列</h2>
+          <span class="count-pill" id="queueCount">0</span>
+        </div>
+        <div class="queue-list" id="queueList"></div>
+        <p class="queue-tip">有空闲卡释出时，系统按排队顺序自动分配，无需手动操作。</p>
+      </aside>
+    </div>
+  </main>
+
+  <div id="modalRoot"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

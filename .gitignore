@@ -1,0 +1,9 @@
+node_modules/
+
+# 运行时生成的调度状态
+data/state.json
+data/*.tmp
+
+# 本地临时产物
+.screenshots/
+.trae-html-share-packages/

@@ -1,0 +1,10 @@
+{
+  "name": "gpu-card-scheduler",
+  "version": "1.0.0",
+  "private": true,
+  "description": "在线算力卡申请与占用调度台",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
