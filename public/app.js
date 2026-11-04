@@ -686,7 +686,7 @@ function renderApplyPanel(machine) {
           <div class="custom-row" ${draft.startMode === 'later' ? '' : 'hidden'}>
             <button type="button" class="time-trigger" data-action="open-time-picker">
               <span class="time-trigger-value">${draft.startAt ? fmtWhen(draft.startAt) : '选择开始时间'}</span>
-              <span class="time-trigger-hint">滑动或点击选择</span>
+              <span class="time-trigger-hint">选择时间</span>
             </button>
           </div>
         </div>
