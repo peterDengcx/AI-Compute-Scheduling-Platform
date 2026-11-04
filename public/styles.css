@@ -295,13 +295,17 @@ body {
 .gpu-slot.free .slot-sub { color: rgba(4, 120, 87, 0.62); }
 
 .gpu-slot.busy {
-  border-color: rgba(99, 102, 241, 0.26);
-  background: linear-gradient(180deg, rgba(99, 102, 241, 0.12), rgba(99, 102, 241, 0.025));
+  border-color: rgba(220, 38, 38, 0.32);
+  background: linear-gradient(180deg, rgba(239, 68, 68, 0.13), rgba(239, 68, 68, 0.03));
 }
 
-.gpu-slot.busy:hover { border-color: rgba(99, 102, 241, 0.55); }
+.gpu-slot.busy:hover { border-color: rgba(220, 38, 38, 0.62); }
 
-.gpu-slot.busy .dot { background: #6366f1; box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.16); }
+.gpu-slot.busy .dot { background: #ef4444; box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.16); }
+.gpu-slot.busy .slot-main { color: #b91c1c; }
+.gpu-slot.busy .slot-sub { color: rgba(185, 28, 28, 0.72); }
+.gpu-slot.busy .slot-bar { background: rgba(239, 68, 68, 0.14); }
+.gpu-slot.busy .slot-bar i { background: linear-gradient(90deg, #ef4444, #fca5a5); }
 
 .gpu-slot.soon {
   border-color: rgba(217, 119, 6, 0.45);
@@ -412,16 +416,6 @@ body {
 
 .tl-head p { margin: 3px 0 0; font-size: 12.5px; color: var(--dim); }
 
-.tl-count {
-  flex: none;
-  padding: 3px 9px;
-  border-radius: 999px;
-  border: 1px solid rgba(13, 148, 136, 0.22);
-  background: rgba(13, 148, 136, 0.07);
-  color: #0f766e;
-  font-size: 12px;
-}
-
 .tl-scroll {
   flex: 1;
   min-width: 0;
@@ -518,9 +512,9 @@ body {
   min-width: 4px;
   padding: 0 8px;
   border-radius: 6px;
-  border: 1px solid hsl(var(--h, 190) 55% 72%);
-  background: hsl(var(--h, 190) 72% 93%);
-  color: hsl(var(--h, 190) 45% 28%);
+  border: 1px solid hsl(var(--h, 190) 62% 66%);
+  background: hsl(var(--h, 190) 80% 94%);
+  color: hsl(var(--h, 190) 55% 26%);
   font-family: inherit;
   text-align: left;
   white-space: nowrap;
@@ -537,7 +531,7 @@ body {
 .tl-bar.tiny { padding: 0; }
 .tl-bar.tiny .tl-bar-name { display: none; }
 
-.tl-bar.running { background: hsl(var(--h, 190) 68% 87%); border-color: hsl(var(--h, 190) 55% 62%); }
+.tl-bar.running { background: hsl(var(--h, 190) 78% 88%); border-color: hsl(var(--h, 190) 62% 58%); }
 
 .tl-bar.mine { box-shadow: inset 0 0 0 2px rgba(13, 148, 136, 0.45); }
 
@@ -597,18 +591,6 @@ body {
   background: var(--indigo);
   transform: translateX(-50%);
 }
-
-.tl-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-top: 10px;
-  font-size: 11.5px;
-  color: var(--dim);
-}
-
-.tl-tip { flex: none; }
 
 /* ------------------------------ 内嵌申请面板 ------------------------------ */
 
@@ -1229,7 +1211,6 @@ input::placeholder { color: var(--dim); }
   .gpu-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .gpu-slot { min-height: 88px; }
   .machine-tl { padding: 14px 14px 12px; }
-  .tl-foot { flex-wrap: wrap; }
   .chips { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .pick-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .apply-grid { grid-template-columns: 1fr; }

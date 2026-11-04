@@ -8,15 +8,14 @@ const DURATION_OPTIONS = [
   { label: '4 hour', ms: 4 * 60 * 60 * 1000 },
   { label: '8 hour', ms: 8 * 60 * 60 * 1000 },
   { label: '12 hour', ms: 12 * 60 * 60 * 1000 },
-  { label: '24 hour', ms: 24 * 60 * 60 * 1000 },
-  { label: '48 hour', ms: 48 * 60 * 60 * 1000 },
 ];
 const CARD_OPTIONS = [1, 2, 4, 8];
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
 const DEFAULT_MAX_ADVANCE = 2 * DAY;
 const MIN_DURATION = 5 * 60 * 1000;
-const MAX_DURATION = 2 * DAY;
+// 单次占用最多 12 小时，提前预约窗口仍为 48 小时
+const MAX_DURATION = 12 * HOUR;
 
 const els = {
   stats: document.getElementById('stats'),
@@ -161,6 +160,7 @@ function draftWindow() {
 }
 
 function render() {
+  refreshUserHues();
   renderUser();
   renderStats();
   renderMachines();
@@ -270,32 +270,25 @@ function fmtHM(timestamp) {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-// 同一个人固定同一色相，方便一眼看出「谁占了多久」；色相取自一组彼此拉开距离的值
-const PERSON_HUES = [196, 22, 268, 142, 332, 48, 218, 96, 306, 12, 176, 240];
-const hueAssign = (() => {
-  try {
-    const raw = JSON.parse(localStorage.getItem('gpu.hues') || '{}');
-    return raw && typeof raw === 'object' ? raw : {};
-  } catch (err) {
-    return {};
-  }
-})();
+// 每个使用人一个色相：按当前数据里的用户名排序后取黄金角，保证不同人的颜色拉得开，
+// 并且所有浏览器看到的是同一套配色
+let userHues = new Map();
 
-// 新出现的人优先拿还没被占用的色相，避免两个人撞色
-function personHue(name) {
-  const key = String(name);
-  const known = hueAssign[key];
-  if (Number.isInteger(known)) return PERSON_HUES[known % PERSON_HUES.length];
-  const used = new Set(Object.values(hueAssign).map((index) => index % PERSON_HUES.length));
-  let slot = PERSON_HUES.findIndex((_, index) => !used.has(index));
-  if (slot === -1) slot = Object.keys(hueAssign).length % PERSON_HUES.length;
-  hueAssign[key] = slot;
-  try {
-    localStorage.setItem('gpu.hues', JSON.stringify(hueAssign));
-  } catch (err) {
-    /* 存储不可用时仅当前会话有效 */
+function refreshUserHues() {
+  const names = new Set();
+  for (const machine of state.machines) {
+    for (const gpu of machine.gpus) {
+      for (const booking of gpu.bookings) names.add(booking.user);
+    }
   }
-  return PERSON_HUES[slot];
+  userHues = new Map();
+  [...names].sort().forEach((name, index) => {
+    userHues.set(name, Math.round((200 + index * 137.508) % 360));
+  });
+}
+
+function personHue(name) {
+  return userHues.get(String(name)) ?? 200;
 }
 
 // 当天时间窗内的预约统计：几组（段）、几张卡次
@@ -403,7 +396,6 @@ function renderTimeline(machine) {
           <h4>今日预约</h4>
           <p>${dateLabel} · 00:00 – 24:00 · 现在 ${fmtHM(time)}</p>
         </div>
-        <span class="tl-count">${total ? `${total} 条 · 每行一张卡` : '今日空闲'}</span>
       </header>
       <div class="tl-scroll">
         <div class="tl-chart">
@@ -417,10 +409,6 @@ function renderTimeline(machine) {
           </div>
         </div>
       </div>
-      <footer class="tl-foot">
-        <span class="tl-legend">每行一张卡，条形长度即占用时段；灰色为已过期，点击条形可查看整组详情</span>
-        <span class="tl-tip">每天 24:00 自动刷新当天预约</span>
-      </footer>
     </div>
   `;
 }
@@ -1033,7 +1021,7 @@ async function submitDraft() {
     return;
   }
   if (!(draft.durationMs >= MIN_DURATION && draft.durationMs <= MAX_DURATION)) {
-    toast('占用时长需在 5 分钟到 48 小时之间', 'error');
+    toast('占用时长需在 5 分钟到 12 小时之间', 'error');
     return;
   }
 
@@ -1212,58 +1200,6 @@ function onMachineClick(event) {
   } else if (action === 'book-any') {
     openApply(machineId, null);
   }
-}
-
-function askUser(onSaved) {
-  const dismissible = Boolean(me);
-  openModal(
-    `
-      <div class="modal-head">
-        <div>
-          <h3>填写使用人</h3>
-          <p>用于预约、占用与释放算力卡的身份标识</p>
-        </div>
-        ${dismissible ? '<button type="button" class="icon-btn" data-close>×</button>' : ''}
-      </div>
-      <div class="field">
-        <label>姓名 / 工号</label>
-        <input type="text" id="userInput" maxlength="20" placeholder="例如：李哲" value="${escapeHtml(me)}">
-      </div>
-      <div class="modal-actions">
-        ${dismissible ? '<button type="button" class="ghost-btn" data-close>取消</button>' : ''}
-        <button type="button" class="primary-btn" id="saveUser">进入调度台</button>
-      </div>
-    `,
-    {
-      dismissible,
-      onMount(modal) {
-        const input = modal.querySelector('#userInput');
-        input.focus();
-        const submit = () => {
-          const name = input.value.trim();
-          if (!name) {
-            toast('请输入姓名或工号', 'error');
-            input.focus();
-            return;
-          }
-          me = name;
-          localStorage.setItem('gpu.user', name);
-          closeModal();
-          render();
-          toast(`当前使用人：${name}`);
-          if (onSaved) {
-            const callback = onSaved;
-            onSaved = null;
-            callback();
-          }
-        };
-        modal.querySelector('#saveUser').addEventListener('click', submit);
-        input.addEventListener('keydown', (event) => {
-          if (event.key === 'Enter') submit();
-        });
-      },
-    }
-  );
 }
 
 /* ------------------------------- 申请 / 预约 ------------------------------- */
@@ -1472,10 +1408,6 @@ function openReleaseConfirm(machine, gpu, booking) {
 /* --------------------------------- 新增节点 -------------------------------- */
 
 function openAddNode() {
-  if (!me) {
-    askUser(() => openAddNode());
-    return;
-  }
   const nextIndex = nextNodeIndex();
 
   openModal(

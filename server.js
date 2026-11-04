@@ -12,7 +12,7 @@ const STATE_FILE = path.join(DATA_DIR, 'state.json');
 
 const GPU_PER_MACHINE = 8;
 const MIN_DURATION = 5 * 60 * 1000;
-const MAX_DURATION = 48 * 60 * 60 * 1000;
+const MAX_DURATION = 12 * 60 * 60 * 1000;
 const MAX_ADVANCE = 48 * 60 * 60 * 1000;
 const MAX_NOTE = 60;
 const CARD_CHOICES = [1, 2, 4, 8];
@@ -177,7 +177,7 @@ function requireUser(body) {
 function requireDuration(body) {
   const ms = Number(body.durationMs);
   if (!Number.isFinite(ms) || ms < MIN_DURATION || ms > MAX_DURATION) {
-    throw new HttpError(400, '占用时长需在 5 分钟到 48 小时之间');
+    throw new HttpError(400, '占用时长需在 5 分钟到 12 小时之间');
   }
   return Math.round(ms);
 }
