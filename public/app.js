@@ -171,6 +171,53 @@ function isGpuFreeIn(gpu, startAt, endAt) {
   return !gpu.bookings.some((booking) => booking.startAt < endAt && startAt < booking.endAt);
 }
 
+// 某张卡在 [startAt, endAt) 里还能连续占用的时段
+function freeWindows(gpu, startAt, endAt) {
+  const windows = [];
+  let cursor = startAt;
+  for (const booking of [...gpu.bookings].sort((a, b) => a.startAt - b.startAt)) {
+    if (booking.endAt <= cursor) continue;
+    if (booking.startAt > cursor) windows.push({ startAt: cursor, endAt: Math.min(booking.startAt, endAt) });
+    cursor = Math.max(cursor, booking.endAt);
+    if (cursor >= endAt) break;
+  }
+  if (cursor < endAt) windows.push({ startAt: cursor, endAt });
+  return windows.filter((window) => window.endAt > window.startAt);
+}
+
+// 卡片上的一行预约摘要：今天之外的预约带上「明天 / 后天」前缀
+function bookingChip(booking) {
+  const dayOffset = Math.floor((booking.startAt - todayStart()) / DAY);
+  const dayPrefix = dayOffset === 1 ? '明天 ' : dayOffset >= 2 ? '后天 ' : '';
+  return `<i class="chip-dot" style="--h:${personHue(booking.user)}"></i>${dayPrefix}${fmtHM(
+    booking.startAt
+  )}–${fmtHM(booking.endAt)} ${escapeHtml(booking.user)}`;
+}
+
+// 今天各卡还能占的时段，写在节点底部说明里
+function freePlanText(machine) {
+  const time = now();
+  const dayEnd = todayStart() + DAY;
+  const groups = new Map();
+  for (const gpu of machine.gpus) {
+    const windows = freeWindows(gpu, time, dayEnd);
+    if (!windows.length) continue;
+    const key = windows
+      .map(
+        (window) =>
+          `${window.startAt === time ? '现在' : fmtHM(window.startAt)}–${
+            window.endAt >= dayEnd ? '24:00' : fmtHM(window.endAt)
+          }`
+      )
+      .join('、');
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(gpu.id);
+  }
+  if (!groups.size) return '今天剩余时段已排满，可切换到明天查看并预约';
+  const parts = [...groups.entries()].map(([key, ids]) => `卡 ${ids.join('/')} ${key}`);
+  return `今天可占：${parts.join(' · ')}`;
+}
+
 function draftWindow() {
   const start = draft.startMode === 'later' && draft.startAt ? draft.startAt : now();
   return { start, end: start + (draft.durationMs || 0) };
@@ -311,7 +358,10 @@ function machineRow(machine, offset) {
         </header>
         <div class="gpu-grid">${machine.gpus.map((gpu) => renderSlot(machine, gpu, offset)).join('')}</div>
         <footer class="machine-foot">
-          <span>${footText}</span>
+          <div class="foot-lines">
+            <span>${footText}</span>
+            ${isToday ? `<span class="foot-free">${freePlanText(machine)}</span>` : ''}
+          </div>
           ${
             isToday
               ? `<button type="button" class="mini-btn" data-action="book-any" data-machine="${machine.id}">
@@ -519,6 +569,7 @@ function renderDaySlot(machine, gpu, offset) {
   const first = list[0];
   const mine = isMine(first);
   const groupTag = first.count > 1 ? `<span class="group-tag">×${first.count}</span>` : '';
+  const dayLabel = offset === 1 ? '明天' : '后天';
   const range = list
     .map(
       (booking) =>
@@ -527,14 +578,14 @@ function renderDaySlot(machine, gpu, offset) {
         )}${booking.endAt > dayEnd ? '…' : ''}`
     )
     .join(' / ');
-  const title = `${first.user}${first.note ? '｜' + first.note : ''}｜${range}`;
+  const title = `${first.user}${first.note ? '｜' + first.note : ''}｜${dayLabel} ${range}`;
   return `
-    <button type="button" class="gpu-slot reserved" data-action="group" data-day="${offset}" data-machine="${
+    <button type="button" class="gpu-slot reserved day-${offset}" data-action="group" data-day="${offset}" data-machine="${
     machine.id
   }" data-group="${escapeHtml(first.groupId || first.id)}" title="${escapeHtml(title)}">
       <div class="slot-top"><span class="slot-name">卡 ${gpu.id}${groupTag}</span><span class="dot"></span></div>
       <div class="slot-main">${escapeHtml(first.user)}${mine ? '<span class="me-tag">我</span>' : ''}</div>
-      <div class="slot-sub">${range}</div>
+      <div class="slot-sub">${dayLabel} ${range}</div>
     </button>
   `;
 }
@@ -543,6 +594,7 @@ function renderSlot(machine, gpu, offset = 0) {
   if (offset > 0) return renderDaySlot(machine, gpu, offset);
 
   const { current, upcoming } = gpuStatus(gpu, now());
+  const reserve = upcoming ? `<div class="slot-reserve">${bookingChip(upcoming)}</div>` : '';
 
   if (current) {
     const total = Math.max(1, current.endAt - current.startAt);
@@ -555,6 +607,7 @@ function renderSlot(machine, gpu, offset = 0) {
         <div class="slot-top"><span class="slot-name">卡 ${gpu.id}${groupTag}</span><span class="dot"></span></div>
         <div class="slot-main">${escapeHtml(current.user)}${mine ? '<span class="me-tag">我</span>' : ''}</div>
         <div class="slot-sub timer" data-start="${current.startAt}" data-end="${current.endAt}">剩余 ${fmtRemain(current.endAt - now())}</div>
+        ${reserve}
         <div class="slot-bar"><i style="width:${percent.toFixed(1)}%"></i></div>
       </button>
     `;
@@ -562,15 +615,13 @@ function renderSlot(machine, gpu, offset = 0) {
 
   // 现在空闲：即使今天稍后已有预约，也应该能立即占用（占用时长会自动收到那段预约开始前）
   if (upcoming) {
-    const dayOffset = Math.floor((upcoming.startAt - todayStart()) / DAY);
-    const when =
-      dayOffset > 0 ? `${dayOffset === 1 ? '明天' : '后天'} ${fmtHM(upcoming.startAt)}` : fmtHM(upcoming.startAt);
-    const title = `现在空闲，可立即占用；${when} 起已预约给 ${upcoming.user}`;
+    const title = `现在空闲，可立即占用；${fmtHM(upcoming.startAt)} 起已预约给 ${upcoming.user}`;
     return `
       <button type="button" class="gpu-slot free" data-action="book" data-machine="${machine.id}" data-gpu="${gpu.id}" title="${escapeHtml(title)}">
         <div class="slot-top"><span class="slot-name">卡 ${gpu.id}</span><span class="dot"></span></div>
         <div class="slot-main">空闲</div>
-        <div class="slot-sub">现在可占 · ${when} 起已约</div>
+        <div class="slot-sub">现在可占</div>
+        ${reserve}
       </button>
     `;
   }

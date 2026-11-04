@@ -257,7 +257,7 @@ body {
   position: relative;
   display: block;
   width: 100%;
-  min-height: 98px;
+  min-height: 110px;
   padding: 10px 10px 15px;
   border-radius: 12px;
   border: 1px solid rgba(16, 185, 129, 0.24);
@@ -315,6 +315,29 @@ body {
 .gpu-slot.free .slot-main { color: #047857; }
 .gpu-slot.free .slot-sub { color: rgba(4, 120, 87, 0.62); }
 
+/* 卡上那一行预约摘要：彩色圆点对应用户，文字给出时段 */
+.slot-reserve {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 5px;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chip-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: hsl(var(--h, 190) 62% 52%);
+}
+
 .gpu-slot.busy {
   border-color: rgba(220, 38, 38, 0.32);
   background: linear-gradient(180deg, rgba(239, 68, 68, 0.13), rgba(239, 68, 68, 0.03));
@@ -346,6 +369,17 @@ body {
 .gpu-slot.reserved .dot { background: #8b5cf6; box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.18); }
 .gpu-slot.reserved .slot-main { color: #6d28d9; }
 .gpu-slot.reserved .slot-sub { color: rgba(109, 40, 217, 0.72); }
+
+/* 明天用紫色、后天用青色，翻页时一眼能分清是哪一天的预约 */
+.gpu-slot.reserved.day-2 {
+  border-color: rgba(13, 148, 136, 0.36);
+  background: linear-gradient(180deg, rgba(13, 148, 136, 0.12), rgba(13, 148, 136, 0.02));
+}
+
+.gpu-slot.reserved.day-2:hover { border-color: rgba(15, 118, 110, 0.68); }
+.gpu-slot.reserved.day-2 .dot { background: #0d9488; box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.18); }
+.gpu-slot.reserved.day-2 .slot-main { color: #0f766e; }
+.gpu-slot.reserved.day-2 .slot-sub { color: rgba(15, 118, 110, 0.72); }
 
 .group-tag {
   margin-left: 5px;
@@ -406,7 +440,7 @@ body {
 
 .machine-foot {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
   margin-top: 15px;
@@ -415,6 +449,9 @@ body {
   font-size: 13px;
   color: var(--dim);
 }
+
+.foot-lines { min-width: 0; }
+.foot-lines .foot-free { display: block; margin-top: 4px; font-size: 12.5px; line-height: 1.6; }
 
 /* ------------------------------ 当天预约时间轴 ------------------------------ */
 
