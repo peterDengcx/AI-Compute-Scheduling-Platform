@@ -399,6 +399,82 @@ body {
   animation: rise 0.24s ease both;
 }
 
+/* --------------------- 申请算力卡二级弹层（靛蓝主题） --------------------- */
+
+.modal-backdrop.apply-backdrop {
+  background: rgba(21, 27, 51, 0.46);
+  backdrop-filter: blur(14px) saturate(125%);
+  -webkit-backdrop-filter: blur(14px) saturate(125%);
+}
+
+.modal.apply-modal {
+  width: min(720px, 100%);
+  max-height: 88vh;
+  padding: 0;
+  border-radius: 28px;
+  border: 1px solid rgba(79, 70, 229, 0.3);
+  border-top: 4px solid #4f46e5;
+  background: linear-gradient(168deg, #f6f7ff 0%, #eef2ff 52%, #f3fbfa 100%);
+  box-shadow: 0 40px 100px rgba(23, 31, 61, 0.38);
+  overflow-y: auto;
+}
+
+/* 弹层内不重播入场动画，局部刷新时视觉稳定 */
+.apply-modal .apply-panel {
+  margin: 0;
+  padding: 22px 26px 20px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  animation: none;
+}
+
+.apply-modal .apply-head {
+  align-items: center;
+  padding-bottom: 14px;
+  margin-bottom: 15px;
+  border-bottom: 1px solid rgba(79, 70, 229, 0.16);
+}
+
+.apply-modal .apply-head h4 { font-size: 18px; }
+
+.apply-modal .pick-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.apply-modal .pick-card { min-height: 104px; }
+
+.apply-modal .apply-grid { grid-template-columns: minmax(0, 1fr); }
+.apply-modal .apply-field .chips-duration { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+
+.apply-user-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 7px;
+}
+
+.apply-user-label {
+  flex: none;
+  font-size: 13px;
+  font-weight: 600;
+  color: #4338ca;
+}
+
+.apply-user-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  font-size: 14px;
+}
+
+@media (max-width: 760px) {
+  .apply-modal .apply-head { align-items: flex-start; }
+  .apply-modal .pick-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 .apply-head {
   display: flex;
   align-items: flex-start;
@@ -615,6 +691,7 @@ body {
 }
 
 .queue-meta { margin-top: 3px; font-size: 12px; color: var(--dim); }
+.queue-eta { margin-top: 2px; color: #b45309; }
 
 .queue-empty {
   padding: 26px 16px;
@@ -1027,4 +1104,31 @@ input::placeholder { color: var(--dim); }
   .apply-actions .primary-btn { flex: 1; }
   .section-head { flex-wrap: wrap; }
   .section-head .hint { display: none; }
+}
+
+/* ---------------------- 圆润矩形视觉统一 ---------------------- */
+
+:root { --radius: 24px; }
+
+.stat-card { border-radius: 20px; }
+.machine-card { border-radius: 26px; }
+.gpu-slot { border-radius: 16px; }
+.queue-panel { border-radius: 26px; }
+.queue-item { border-radius: 18px; }
+.queue-empty { border-radius: 18px; }
+.modal { border-radius: 26px; }
+.apply-modal { border-radius: 28px; }
+.chip { border-radius: 14px; }
+.seg { border-radius: 16px; }
+.seg-btn { border-radius: 12px; }
+.count-chip { border-radius: 999px; }
+.toast { border-radius: 18px; }
+
+input[type="text"],
+input[type="number"],
+input[type="password"],
+input[type="datetime-local"] { border-radius: 13px; }
+
+@media (max-width: 760px) {
+  .apply-modal .apply-field .chips-duration { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }

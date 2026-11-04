@@ -2,13 +2,13 @@
 
 const API_BASE = '/api';
 const DURATION_OPTIONS = [
-  { label: '30 分钟', ms: 30 * 60 * 1000 },
-  { label: '1 小时', ms: 60 * 60 * 1000 },
-  { label: '2 小时', ms: 2 * 60 * 60 * 1000 },
-  { label: '4 小时', ms: 4 * 60 * 60 * 1000 },
-  { label: '8 小时', ms: 8 * 60 * 60 * 1000 },
-  { label: '12 小时', ms: 12 * 60 * 60 * 1000 },
-  { label: '24 小时', ms: 24 * 60 * 60 * 1000 },
+  { label: '30 min', ms: 30 * 60 * 1000 },
+  { label: '1 hour', ms: 60 * 60 * 1000 },
+  { label: '2 hour', ms: 2 * 60 * 60 * 1000 },
+  { label: '4 hour', ms: 4 * 60 * 60 * 1000 },
+  { label: '8 hour', ms: 8 * 60 * 60 * 1000 },
+  { label: '12 hour', ms: 12 * 60 * 60 * 1000 },
+  { label: '24 hour', ms: 24 * 60 * 60 * 1000 },
 ];
 const CARD_OPTIONS = [1, 2, 4, 8];
 const HOUR = 60 * 60 * 1000;
@@ -44,18 +44,17 @@ const now = () => Date.now() + clockOffset;
 /* --------------------------------- 初始化 --------------------------------- */
 
 (async function init() {
-  els.switchUser.addEventListener('click', () => askUser());
   els.addNode.addEventListener('click', () => openAddNode());
   els.machines.addEventListener('click', onMachineClick);
-  els.machines.addEventListener('input', onPanelInput);
-  els.machines.addEventListener('change', onPanelChange);
+  els.modalRoot.addEventListener('click', onPanelClick);
+  els.modalRoot.addEventListener('input', onPanelInput);
+  els.modalRoot.addEventListener('change', onPanelChange);
   els.queueList.addEventListener('click', onQueueClick);
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) poll();
   });
 
   await loadState();
-  if (!me) askUser();
   setInterval(poll, 2500);
   setInterval(tick, 1000);
 })();
@@ -88,6 +87,8 @@ function applyState(data) {
   if (signature === lastSignature) return;
   lastSignature = signature;
   render();
+  // 数据变化时只刷新弹层内容，不重建页面其余部分
+  if (draft) refreshApplyModal();
 }
 
 /* ---------------------------------- 渲染 ---------------------------------- */
@@ -119,6 +120,7 @@ function render() {
 }
 
 function renderUser() {
+  if (!els.userName) return;
   els.userName.textContent = me || '未登录';
   els.userAvatar.textContent = me ? me.slice(0, 1) : '–';
 }
@@ -191,7 +193,6 @@ function renderMachines() {
       }
       const free = machine.gpus.length - used - reserved;
       const badgeClass = used === 0 ? 'free' : used === machine.gpus.length ? 'full' : 'busy';
-      const applying = Boolean(draft && draft.machineId === machine.id);
       return `
         <article class="machine-card" data-machine-id="${machine.id}">
           <header class="machine-head">
@@ -202,11 +203,10 @@ function renderMachines() {
             <span class="machine-badge ${badgeClass}">${used} / ${machine.gpus.length} 使用中</span>
           </header>
           <div class="gpu-grid">${machine.gpus.map((gpu) => renderSlot(machine, gpu)).join('')}</div>
-          ${applying ? renderApplyPanel(machine) : ''}
           <footer class="machine-foot">
             <span>${free} 卡空闲${reserved ? ` · ${reserved} 卡已预约` : ''} · 到期自动释放</span>
             <button type="button" class="mini-btn" data-action="book-any" data-machine="${machine.id}">
-              ${applying ? '收起申请' : free > 0 ? '申请空闲卡' : '排队等候'}
+              ${free > 0 ? '申请空闲卡' : '排队等候'}
             </button>
           </footer>
         </article>
@@ -310,7 +310,12 @@ function renderApplyPanel(machine) {
       <div class="apply-head">
         <div>
           <h4>申请算力卡 <span class="apply-pill">${draft.gpuIds.length} / ${freeIds.size} 已选</span></h4>
-          <p>点选具体卡，卡片状态随占用与预约实时更新</p>
+          <div class="apply-user-row">
+            <span class="apply-user-label">申请人</span>
+            <input type="text" id="draftUser" maxlength="20" autocomplete="off"
+              value="${escapeHtml(draft.user || '')}" placeholder="填写你的姓名，作为占用人">
+          </div>
+          <p>${escapeHtml(machine.name)} · 点选卡位后确认申请</p>
         </div>
         <button type="button" class="icon-btn" data-action="apply-close" aria-label="收起申请面板">×</button>
       </div>
@@ -340,7 +345,7 @@ function renderApplyPanel(machine) {
           <div class="custom-row">
             <input type="number" id="draftMinutes" min="5" max="10080"
               value="${escapeHtml(draft.customMinutes)}" placeholder="自定义">
-            <span>分钟（5 ~ 10080）</span>
+            <span>min（5 ~ 10080）</span>
           </div>
         </div>
         <div class="apply-field">
@@ -376,10 +381,6 @@ function renderApplyPanel(machine) {
 }
 
 function openApply(machineId, presetGpu) {
-  if (!me) {
-    askUser(() => openApply(machineId, presetGpu));
-    return;
-  }
   const machine = findMachine(machineId);
   if (!machine) return;
 
@@ -395,16 +396,105 @@ function openApply(machineId, presetGpu) {
   draft = {
     machineId,
     gpuIds,
+    user: me,
     durationMs,
     startMode: 'now',
     startAt: time + HOUR,
     note: '',
     customMinutes: '',
   };
-  render();
+  openApplyModal();
+}
 
-  const card = els.machines.querySelector(`[data-machine-id="${machineId}"]`);
-  if (card) card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+/* 申请面板：独立二级弹层，背景高斯模糊 */
+function openApplyModal() {
+  const machine = findMachine(draft.machineId);
+  if (!machine) return;
+  closeModal();
+  els.modalRoot.innerHTML = `
+    <div class="modal-backdrop apply-backdrop">
+      <section class="modal apply-modal" role="dialog" aria-modal="true">${renderApplyPanel(machine)}</section>
+    </div>`;
+  const backdrop = els.modalRoot.firstElementChild;
+  backdrop.addEventListener('mousedown', (event) => {
+    if (event.target === backdrop) closeApply();
+  });
+  escHandler = (event) => {
+    if (event.key === 'Escape') closeApply();
+  };
+  document.addEventListener('keydown', escHandler);
+}
+
+// 只重建弹层内部，页面其余部分保持不变，避免整屏闪烁
+function refreshApplyModal() {
+  const modal = els.modalRoot.querySelector('.apply-modal');
+  if (!modal || !draft) return;
+  const machine = findMachine(draft.machineId);
+  if (!machine) {
+    closeApply();
+    return;
+  }
+  const active = document.activeElement;
+  const focusId = active && active.id && modal.contains(active) ? active.id : '';
+  const selStart = focusId && 'selectionStart' in active ? active.selectionStart : null;
+  const selEnd = focusId && 'selectionEnd' in active ? active.selectionEnd : null;
+  modal.innerHTML = renderApplyPanel(machine);
+  if (focusId) {
+    const next = modal.querySelector(`#${focusId}`);
+    if (next) {
+      next.focus();
+      if (selStart != null) {
+        try {
+          next.setSelectionRange(selStart, selEnd);
+        } catch (err) {
+          /* number 类型的 input 不支持 setSelectionRange，忽略 */
+        }
+      }
+    }
+  }
+}
+
+function closeApply() {
+  draft = null;
+  closeModal();
+}
+
+function onPanelClick(event) {
+  const trigger = event.target.closest('[data-action]');
+  if (!trigger || !draft) return;
+  const action = trigger.dataset.action;
+
+  if (action === 'apply-close') {
+    closeApply();
+    return;
+  }
+  if (action === 'apply-submit') {
+    submitDraft();
+    return;
+  }
+  if (action === 'pick-gpu') {
+    const gpuId = Number(trigger.dataset.gpu);
+    draft.gpuIds = draft.gpuIds.includes(gpuId)
+      ? draft.gpuIds.filter((id) => id !== gpuId)
+      : [...draft.gpuIds, gpuId].sort((a, b) => a - b);
+    refreshApplyModal();
+    return;
+  }
+  if (action === 'draft-count') {
+    applyQuickCount(Number(trigger.dataset.count));
+    return;
+  }
+  if (action === 'draft-duration') {
+    draft.durationMs = Number(trigger.dataset.ms);
+    draft.customMinutes = '';
+    refreshApplyModal();
+    return;
+  }
+  if (action === 'draft-start-mode') {
+    draft.startMode = trigger.dataset.mode;
+    if (draft.startMode === 'later' && !(draft.startAt > now())) draft.startAt = now() + HOUR;
+    refreshApplyModal();
+  }
 }
 
 function applyQuickCount(count) {
@@ -424,7 +514,7 @@ function applyQuickCount(count) {
   const kept = draft.gpuIds.filter((id) => freeSet.has(id)).sort((a, b) => a - b);
   if (kept.length >= count) {
     draft.gpuIds = kept.slice(0, count);
-    render();
+    refreshApplyModal();
     return;
   }
 
@@ -441,7 +531,7 @@ function applyQuickCount(count) {
     if (!block) block = freeIds.slice(0, count);
     if (block.length < count) toast(`该时段仅有 ${freeIds.length} 张可用卡`);
     draft.gpuIds = block.slice().sort((a, b) => a - b);
-    render();
+    refreshApplyModal();
     return;
   }
 
@@ -465,11 +555,15 @@ function applyQuickCount(count) {
 
   if (chosen.length < count) toast(`该时段仅有 ${freeIds.length} 张可用卡`);
   draft.gpuIds = chosen.sort((a, b) => a - b);
-  render();
+  refreshApplyModal();
 }
 
 function onPanelInput(event) {
   if (!draft) return;
+  if (event.target.id === 'draftUser') {
+    draft.user = event.target.value;
+    return;
+  }
   if (event.target.id === 'draftNote') draft.note = event.target.value;
   if (event.target.id === 'draftMinutes') draft.customMinutes = event.target.value;
 }
@@ -483,18 +577,25 @@ function onPanelChange(event) {
       draft.durationMs = Math.round(minutes * 60000);
       draft.customMinutes = event.target.value;
     }
-    render();
+    refreshApplyModal();
     return;
   }
 
   if (event.target.id === 'draftStartAt') {
     draft.startAt = event.target.value ? new Date(event.target.value).getTime() : null;
-    render();
+    refreshApplyModal();
   }
 }
 
 async function submitDraft() {
-  if (!draft || !me) return;
+  if (!draft) return;
+  const user = String(draft.user || '').trim();
+  if (!user) {
+    toast('请填写申请人姓名', 'error');
+    const input = els.modalRoot.querySelector('#draftUser');
+    if (input) input.focus();
+    return;
+  }
   if (!draft.gpuIds.length) {
     toast('请至少选择一张卡', 'error');
     return;
@@ -518,7 +619,7 @@ async function submitDraft() {
   }
 
   const payload = {
-    user: me,
+    user,
     machineId: draft.machineId,
     gpuIndexes: draft.gpuIds.slice(),
     durationMs: draft.durationMs,
@@ -526,7 +627,7 @@ async function submitDraft() {
   };
   if (startAt) payload.startAt = startAt;
 
-  const btn = els.machines.querySelector('[data-action="apply-submit"]');
+  const btn = els.modalRoot.querySelector('[data-action="apply-submit"]');
   if (btn) {
     btn.disabled = true;
     btn.textContent = '提交中…';
@@ -535,7 +636,9 @@ async function submitDraft() {
   try {
     const result = await fetchJson('/occupy', payload);
     selectedDuration = draft.durationMs;
-    draft = null;
+    me = user;
+    localStorage.setItem('gpu.user', user);
+    closeApply();
     toast(
       startAt
         ? `已预约 ${result.machineName} · 卡 ${result.gpuIndexes.join('、')}，${fmtClock(result.startAt)} 开始`
@@ -552,6 +655,27 @@ async function submitDraft() {
     lastSignature = '';
     await loadState();
   }
+}
+
+// 估算队列项最早能凑齐卡的时间：必须在同一台节点内凑够 gpuCount 张
+function queueEta(entry) {
+  const targets =
+    entry.machineId === 'any' ? state.machines : state.machines.filter((item) => item.id === entry.machineId);
+  const need = entry.gpuCount || 1;
+  const time = now();
+  let best = null;
+  targets.forEach((machine) => {
+    if (machine.gpus.length < need) return;
+    const times = machine.gpus
+      .map((gpu) => {
+        const ends = gpu.bookings.filter((b) => b.endAt > time).map((b) => b.endAt);
+        return ends.length ? Math.max(...ends) : time;
+      })
+      .sort((a, b) => a - b);
+    const eta = times[need - 1];
+    if (best === null || eta < best) best = eta;
+  });
+  return best;
 }
 
 function renderQueue() {
@@ -581,6 +705,10 @@ function renderQueue() {
             <div class="queue-user">${escapeHtml(entry.user)}${mine ? '<span class="me-tag">我</span>' : ''}</div>
             <div class="queue-target" title="${escapeHtml(target)}">${escapeHtml(target)}</div>
             <div class="queue-meta">${fmtDuration(entry.durationMs)} · 已等 <span class="queue-wait" data-since="${entry.createdAt}">${fmtWait(now() - entry.createdAt)}</span></div>
+            <div class="queue-meta queue-eta">${(() => {
+              const eta = queueEta(entry);
+              return eta ? `最早 ${fmtClock(eta)} 空出 ${entry.gpuCount || 1} 卡` : '等待空闲卡释出';
+            })()}</div>
           </div>
           ${mine ? `<button type="button" class="link-btn" data-cancel-queue="${entry.id}">取消</button>` : ''}
         </div>
@@ -631,43 +759,6 @@ function onMachineClick(event) {
     openAddNode();
     return;
   }
-  if (action === 'apply-close') {
-    draft = null;
-    render();
-    return;
-  }
-  if (action === 'pick-gpu') {
-    if (draft && draft.machineId === trigger.dataset.machine) {
-      const gpuId = Number(trigger.dataset.gpu);
-      draft.gpuIds = draft.gpuIds.includes(gpuId)
-        ? draft.gpuIds.filter((id) => id !== gpuId)
-        : [...draft.gpuIds, gpuId].sort((a, b) => a - b);
-      render();
-    }
-    return;
-  }
-  if (action === 'draft-count') {
-    applyQuickCount(Number(trigger.dataset.count));
-    return;
-  }
-  if (action === 'draft-duration') {
-    if (!draft) return;
-    draft.durationMs = Number(trigger.dataset.ms);
-    draft.customMinutes = '';
-    render();
-    return;
-  }
-  if (action === 'draft-start-mode') {
-    if (!draft) return;
-    draft.startMode = trigger.dataset.mode;
-    if (draft.startMode === 'later' && !(draft.startAt > now())) draft.startAt = now() + HOUR;
-    render();
-    return;
-  }
-  if (action === 'apply-submit') {
-    submitDraft();
-    return;
-  }
 
   const machineId = trigger.dataset.machine;
   const gpuIndex = trigger.dataset.gpu != null ? Number(trigger.dataset.gpu) : null;
@@ -679,11 +770,6 @@ function onMachineClick(event) {
   } else if (action === 'book-any') {
     const machine = findMachine(machineId);
     if (!machine) return;
-    if (draft && draft.machineId === machineId) {
-      draft = null;
-      render();
-      return;
-    }
     const time = now();
     const hasFree = machine.gpus.some((gpu) => isGpuFreeIn(gpu, time, time + selectedDuration));
     if (hasFree) openApply(machineId, null);

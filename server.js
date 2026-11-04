@@ -162,6 +162,13 @@ function dispatchQueue() {
   while (index < state.queue.length) {
     const entry = state.queue[index];
     const now = Date.now();
+    const target = entry.machineId === 'any' ? null : state.machines.find((m) => m.id === entry.machineId);
+    // 目标节点已被删除时清掉该排队项，避免永久堵塞队列
+    if (entry.machineId !== 'any' && !target) {
+      state.queue.splice(index, 1);
+      changed = true;
+      continue;
+    }
     const result = acquire(entry.user, entry.machineId, now, now + entry.durationMs, entry.gpuCount, entry.note);
     if (!result) {
       index += 1;
@@ -296,7 +303,10 @@ function enqueue(body) {
   refresh();
 
   if (state.queue.some((entry) => entry.user === user)) {
-    throw new HttpError(409, '你已在排队中，请先在队列中取消');
+    const queued = state.queue.find((entry) => entry.user === user);
+    const queuedMachine = state.machines.find((machine) => machine.id === queued.machineId);
+    const where = queued.machineId === 'any' ? '任一节点' : queuedMachine ? queuedMachine.name : queued.machineId;
+    throw new HttpError(409, `你已在「${where}」的排队中，请先在队列里取消`);
   }
 
   // 当前能否直接满足，能则不进队列
