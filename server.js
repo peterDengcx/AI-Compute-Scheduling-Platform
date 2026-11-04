@@ -227,13 +227,44 @@ function parseMachineId(body) {
 function occupy(body) {
   const user = requireUser(body);
   const machineId = parseMachineId(body);
-  const count = requireCount(body);
   const durationMs = requireDuration(body);
   const startAt = requireStart(body);
   const endAt = startAt + durationMs;
   const note = normalizeNote(body.note);
 
+  let requested = null;
+  if (Array.isArray(body.gpuIndexes)) {
+    requested = body.gpuIndexes.map((value) => Number(value));
+    if (!requested.length) throw new HttpError(400, '请至少选择一张卡');
+    if (requested.some((id) => !Number.isInteger(id))) throw new HttpError(400, '卡号不合法');
+    if (new Set(requested).size !== requested.length) throw new HttpError(400, '选择的卡有重复');
+    if (machineId === 'any') throw new HttpError(400, '指定卡号时请选择具体的推理节点');
+  }
+  const count = requested ? requested.length : requireCount(body);
+
   refresh();
+
+  if (requested) {
+    const machine = findMachine(machineId);
+    const busy = requested.filter((id) => {
+      const gpu = machine.gpus.find((item) => item.id === id);
+      return !gpu || !gpuFreeBetween(gpu, startAt, endAt);
+    });
+    if (busy.length) {
+      throw new HttpError(409, `卡 ${busy.join('、')} 在该时段不可用，请重新选择`);
+    }
+    const groupId = createBookings(user, machine, requested, { startAt, endAt, note });
+    save();
+    return {
+      ok: true,
+      machineId: machine.id,
+      machineName: machine.name,
+      gpuIndexes: requested,
+      groupId,
+      startAt,
+      endAt,
+    };
+  }
 
   const result = acquire(user, machineId, startAt, endAt, count, note);
   if (!result) {
