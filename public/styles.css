@@ -700,6 +700,8 @@ body {
   color: var(--dim);
 }
 
+.custom-row[hidden] { display: none; }
+
 input[type="text"],
 input[type="number"],
 input[type="password"],
