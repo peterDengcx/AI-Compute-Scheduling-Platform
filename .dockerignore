@@ -1,0 +1,16 @@
+.git
+.gitignore
+node_modules
+npm-debug.log
+
+# 运行时状态：镜像内不打包，部署时用 volume 挂载
+data
+
+# 本地临时产物
+.screenshots
+.trae-html-share-packages
+
+Dockerfile
+.dockerignore
+docker-compose.yml
+README.md

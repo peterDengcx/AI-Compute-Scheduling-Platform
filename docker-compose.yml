@@ -1,0 +1,13 @@
+services:
+  gpu-scheduler:
+    build: .
+    image: gpu-card-scheduler:latest
+    container_name: gpu-card-scheduler
+    ports:
+      - "8787:8787"
+    environment:
+      PORT: "8787"
+    volumes:
+      # 预约数据落在宿主机，重建容器不丢
+      - ./data:/app/data
+    restart: unless-stopped

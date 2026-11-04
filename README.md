@@ -33,6 +33,25 @@ PORT=9000 node server.js          # macOS / Linux
 $env:PORT=9000; node server.js     # Windows PowerShell
 ```
 
+## Docker 部署
+
+镜像已内置 `Dockerfile`，无需 `npm install`，构建后即可直接跑：
+
+```bash
+# 方式一：docker compose（推荐，自动挂载数据卷）
+docker compose up -d --build
+
+# 方式二：手动构建与运行
+docker build -t gpu-card-scheduler:latest .
+docker run -d --name gpu-card-scheduler \
+  -p 8787:8787 \
+  -v "$PWD/data:/app/data" \
+  --restart unless-stopped \
+  gpu-card-scheduler:latest
+```
+
+浏览器打开 <http://localhost:8787>。预约数据保存在宿主机的 `./data/state.json`，删容器重建不会丢；改端口改 `-p 9000:8787` 或 `docker-compose.yml` 里的映射即可。
+
 ## 使用流程
 
 1. 直接打开页面即可使用，无需登录；申请时填写使用人姓名（保存在浏览器 `localStorage`）
@@ -46,6 +65,8 @@ $env:PORT=9000; node server.js     # Windows PowerShell
 ```
 .
 ├── server.js            # HTTP 服务：静态资源、调度逻辑、JSON 持久化
+├── Dockerfile           # 镜像构建（node:20-alpine，零依赖）
+├── docker-compose.yml   # 一键起服务，数据卷挂载 ./data
 ├── public/
 │   ├── index.html       # 页面骨架
 │   ├── styles.css       # 全部样式（含时间轴、弹层、滑轮时间选择器）

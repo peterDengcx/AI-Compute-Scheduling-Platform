@@ -201,7 +201,7 @@ body {
 /* 一层一个节点：左边 8 卡看板，右边当天预约时间轴 */
 .machine-row {
   display: grid;
-  grid-template-columns: minmax(340px, 430px) minmax(0, 1fr);
+  grid-template-columns: minmax(360px, 520px) minmax(0, 1fr);
   border-radius: var(--radius);
   border: 1px solid var(--line);
   background: var(--panel);
@@ -257,8 +257,8 @@ body {
   position: relative;
   display: block;
   width: 100%;
-  min-height: 110px;
-  padding: 10px 10px 15px;
+  min-height: 104px;
+  padding: 11px 11px 14px;
   border-radius: 12px;
   border: 1px solid rgba(16, 185, 129, 0.24);
   background: linear-gradient(180deg, rgba(16, 185, 129, 0.08), rgba(16, 185, 129, 0.02));
@@ -283,7 +283,7 @@ body {
   gap: 6px;
 }
 
-.slot-name { font-size: 12px; color: var(--muted); letter-spacing: 0.4px; }
+.slot-name { font-size: 12.5px; color: var(--muted); letter-spacing: 0.4px; }
 
 .dot {
   width: 7px;
@@ -294,8 +294,8 @@ body {
 }
 
 .slot-main {
-  margin-top: 12px;
-  font-size: 16px;
+  margin-top: 10px;
+  font-size: 16.5px;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
@@ -320,20 +320,17 @@ body {
   display: flex;
   align-items: center;
   gap: 5px;
-  margin-top: 5px;
-  font-size: 11.5px;
+  margin-top: 6px;
+  font-size: 12px;
   line-height: 1.35;
   color: var(--dim);
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .chip-dot {
   flex: none;
-  width: 6px;
-  height: 6px;
+  width: 6.5px;
+  height: 6.5px;
   border-radius: 50%;
   background: hsl(var(--h, 190) 62% 52%);
 }
@@ -1282,7 +1279,7 @@ input::placeholder { color: var(--dim); }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .stat-value { font-size: 24px; }
   .gpu-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .gpu-slot { min-height: 88px; }
+  .gpu-slot { min-height: 92px; }
   .machine-tl { padding: 14px 14px 12px; }
   .chips { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .pick-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
