@@ -686,7 +686,7 @@ function renderApplyPanel(machine) {
           <div class="custom-row" ${draft.startMode === 'later' ? '' : 'hidden'}>
             <button type="button" class="time-trigger" data-action="open-time-picker">
               <span class="time-trigger-value">${draft.startAt ? fmtWhen(draft.startAt) : '选择开始时间'}</span>
-              <span class="time-trigger-hint">滑动选择</span>
+              <span class="time-trigger-hint">滑动或点击选择</span>
             </button>
           </div>
         </div>
@@ -1013,6 +1013,15 @@ function bindWheel(wheel, onChange) {
       if (moved) return; // 拖动结束后不误触发点击
       wheel.scrollTo({ top: index * WHEEL_ITEM, behavior: 'smooth' });
     });
+  });
+
+  // 滑轮在 pointerdown 时抓取了指针，条目自身的 click 收不到，这里按点击位置换算行号补上
+  wheel.addEventListener('click', (event) => {
+    if (moved) return;
+    const padTop = parseFloat(getComputedStyle(wheel).paddingTop) || 0;
+    const offsetY = event.clientY - wheel.getBoundingClientRect().top + wheel.scrollTop;
+    const index = Math.max(0, Math.min(items.length - 1, Math.floor((offsetY - padTop) / WHEEL_ITEM)));
+    wheel.scrollTo({ top: index * WHEEL_ITEM, behavior: 'smooth' });
   });
 }
 
