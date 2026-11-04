@@ -35,6 +35,7 @@ let selectedDuration = 2 * HOUR;
 let escHandler = null;
 let toastTimer = null;
 let polling = false;
+let lastSignature = '';
 
 const now = () => Date.now() + clockOffset;
 
@@ -57,10 +58,7 @@ const now = () => Date.now() + clockOffset;
 
 async function loadState() {
   try {
-    const data = await fetchJson('/state');
-    clockOffset = data.serverTime - Date.now();
-    state = data;
-    render();
+    applyState(await fetchJson('/state'));
   } catch (err) {
     toast('无法连接服务，请确认服务已启动', 'error');
   }
@@ -70,15 +68,22 @@ async function poll() {
   if (polling) return;
   polling = true;
   try {
-    const data = await fetchJson('/state');
-    clockOffset = data.serverTime - Date.now();
-    state = data;
-    render();
+    applyState(await fetchJson('/state'));
   } catch (err) {
     /* 网络抖动时保留上一份数据 */
   } finally {
     polling = false;
   }
+}
+
+// 数据没有变化时不做任何 DOM 重绘，避免界面周期性闪烁
+function applyState(data) {
+  clockOffset = data.serverTime - Date.now();
+  state = data;
+  const signature = JSON.stringify([data.machines, data.queue]);
+  if (signature === lastSignature) return;
+  lastSignature = signature;
+  render();
 }
 
 /* ---------------------------------- 渲染 ---------------------------------- */
