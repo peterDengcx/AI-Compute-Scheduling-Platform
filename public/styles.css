@@ -146,6 +146,27 @@ body {
 .stat-card.busy::before { background: var(--indigo); }
 .stat-card.reserved::before { background: var(--teal); }
 
+/* 占用率 / 空闲率：卡片内按比例铺底色，宽度每秒刷新 */
+.stat-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  pointer-events: none;
+  transition: width 0.8s ease;
+}
+
+.stat-card.busy .stat-fill {
+  background: linear-gradient(90deg, rgba(99, 102, 241, 0.18), rgba(99, 102, 241, 0.04));
+}
+
+.stat-card.free .stat-fill {
+  background: linear-gradient(90deg, rgba(16, 185, 129, 0.2), rgba(16, 185, 129, 0.04));
+}
+
+.stat-card > *:not(.stat-fill) { position: relative; z-index: 1; }
+
 .stat-label { font-size: 13.5px; color: var(--muted); }
 
 .stat-value { margin-top: 6px; font-size: 32px; font-weight: 650; letter-spacing: 0.5px; }
@@ -1194,20 +1215,11 @@ input::placeholder { color: var(--dim); }
 @keyframes pop { from { opacity: 0; transform: translateY(10px) scale(0.98); } to { opacity: 1; transform: none; } }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
-/* ------------------------------ 未来预约（复用节点视图） ------------------------------ */
+/* ------------------------------ 日期切换（节点视图） ------------------------------ */
 
-.future-section { margin-top: 28px; }
+.head-tools { display: flex; align-items: center; gap: 10px; flex: none; }
 
-.future-tools { display: flex; align-items: center; gap: 10px; flex: none; }
-
-.future-tabs { grid-template-columns: repeat(3, minmax(66px, 1fr)); }
-
-/* 与上方节点列表同一套结构：一行一个节点，纵向排列 */
-.future-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
+.day-tabs { grid-template-columns: repeat(3, minmax(66px, 1fr)); }
 
 /* 未来日期的卡位只读：没有预约就整天空闲，不可点击 */
 .gpu-slot.readonly { cursor: default; }

@@ -26,9 +26,8 @@ const els = {
   switchUser: document.getElementById('switchUser'),
   modalRoot: document.getElementById('modalRoot'),
   toast: document.getElementById('toast'),
-  futureGrid: document.getElementById('futureGrid'),
-  futureTabs: document.getElementById('futureTabs'),
-  futureRefresh: document.getElementById('futureRefresh'),
+  dayTabs: document.getElementById('dayTabs'),
+  dayRefresh: document.getElementById('dayRefresh'),
 };
 
 let state = { machines: [], gpuPerMachine: 8, cardChoices: CARD_OPTIONS, maxAdvance: DEFAULT_MAX_ADVANCE };
@@ -54,8 +53,8 @@ const reminded = new Set();
 let titleTimer = null;
 // 节点卡片内嵌申请面板的草稿状态
 let draft = null;
-// 未来预约视图选中的日期：0 今天、1 明天、2 后天（默认看明天）
-let futureDay = 1;
+// 节点视图选中的日期：0 今天、1 明天、2 后天
+let viewDay = 0;
 
 const now = () => Date.now() + clockOffset;
 const maxAdvance = () => state.maxAdvance || DEFAULT_MAX_ADVANCE;
@@ -95,19 +94,19 @@ function isMine(record) {
 (async function init() {
   els.addNode.addEventListener('click', () => openAddNode());
   els.machines.addEventListener('click', onMachineClick);
-  if (els.futureGrid) els.futureGrid.addEventListener('click', onMachineClick);
-  if (els.futureTabs) {
-    els.futureTabs.addEventListener('click', (event) => {
+  if (els.dayTabs) {
+    els.dayTabs.addEventListener('click', (event) => {
       const button = event.target.closest('[data-day]');
       if (!button) return;
-      futureDay = Number(button.dataset.day) || 0;
-      els.futureTabs
+      viewDay = Number(button.dataset.day) || 0;
+      els.dayTabs
         .querySelectorAll('[data-day]')
-        .forEach((item) => item.classList.toggle('active', Number(item.dataset.day) === futureDay));
-      renderFuture();
+        .forEach((item) => item.classList.toggle('active', Number(item.dataset.day) === viewDay));
+      renderMachines();
+      tick();
     });
   }
-  if (els.futureRefresh) els.futureRefresh.addEventListener('click', refreshFuture);
+  if (els.dayRefresh) els.dayRefresh.addEventListener('click', refreshDay);
   els.modalRoot.addEventListener('click', onPanelClick);
   els.modalRoot.addEventListener('input', onPanelInput);
   els.modalRoot.addEventListener('change', onPanelChange);
@@ -182,7 +181,6 @@ function render() {
   renderUser();
   renderStats();
   renderMachines();
-  renderFuture();
   tick();
 }
 
@@ -208,6 +206,9 @@ function renderStats() {
     todayCards += summary.cards;
   }
   const free = total - used;
+  const usedPct = total ? Math.round((used / total) * 100) : 0;
+  const freePct = total ? Math.round((free / total) * 100) : 0;
+  const freeHours = todayFreeHours(time);
 
   els.stats.innerHTML = `
     <div class="stat-card">
@@ -216,11 +217,13 @@ function renderStats() {
       <div class="stat-hint">${state.machines.length} 个推理节点 × ${state.gpuPerMachine || 8} 卡</div>
     </div>
     <div class="stat-card busy">
+      <span class="stat-fill" data-fill="used" style="width:${usedPct}%"></span>
       <div class="stat-label">占用中</div>
       <div class="stat-value">${used}<small>张</small></div>
-      <div class="stat-hint">整体占用率 ${total ? Math.round((used / total) * 100) : 0}%</div>
+      <div class="stat-hint">整体占用率 ${usedPct}%</div>
     </div>
     <div class="stat-card free">
+      <span class="stat-fill" data-fill="free" style="width:${freePct}%"></span>
       <div class="stat-label">空闲可用</div>
       <div class="stat-value">${free}<small>张</small></div>
       <div class="stat-hint">未预约的空档支持直接占用</div>
@@ -228,13 +231,31 @@ function renderStats() {
     <div class="stat-card reserved">
       <div class="stat-label">今日预约</div>
       <div class="stat-value">${todaySegments}<small>段</small></div>
-      <div class="stat-hint">共 ${todayCards} 卡次 · 可提前 48 小时预约</div>
+      <div class="stat-hint">共 ${todayCards} 卡次 · 今日还可预约 ${freeHours} 卡·时（至 24:00）</div>
     </div>
   `;
 }
 
+// 现在 → 24:00 还没被预约的卡·时，用来提示今天还剩多少可约
+function todayFreeHours(time) {
+  const dayEnd = todayStart() + DAY;
+  if (dayEnd <= time) return 0;
+  let hours = 0;
+  for (const machine of state.machines) {
+    for (const gpu of machine.gpus) {
+      hours += (dayEnd - time) / HOUR;
+      for (const booking of gpu.bookings) {
+        const start = Math.max(booking.startAt, time);
+        const end = Math.min(booking.endAt, dayEnd);
+        if (end > start) hours -= (end - start) / HOUR;
+      }
+    }
+  }
+  return Math.max(0, Math.round(hours));
+}
+
 function renderMachines() {
-  els.machines.innerHTML = machineRows(0);
+  els.machines.innerHTML = machineRows(viewDay);
 }
 
 // 一套「节点卡片 + 当天时间轴」，offset=0 为今天，1/2 为明天/后天
@@ -428,7 +449,7 @@ function renderTimeline(machine, offset = 0) {
             machine.id
           }" data-group="${escapeHtml(seg.id)}" title="${escapeHtml(title)}">
               <span class="tl-bar-name">${escapeHtml(seg.user)}${mine ? '<i class="me-tag">我</i>' : ''}</span>
-              <span class="tl-bar-meta">${seg.count > 1 ? `×${seg.count} · ` : ''}${range}</span>
+              <span class="tl-bar-meta">${range}</span>
             </button>`;
         })
         .join('');
@@ -467,15 +488,9 @@ function renderTimeline(machine, offset = 0) {
 }
 
 
-/* ------------------------- 未来两天预约（同一套节点视图） ------------------------- */
+/* --------------------- 未来日期（复用同一套节点视图，只按日期窗口取数） --------------------- */
 
-// 渲染选中的那一天：结构与「推理节点」完全一致，只按日期窗口取数
-function renderFuture() {
-  if (!els.futureGrid) return;
-  els.futureGrid.innerHTML = machineRows(futureDay);
-}
-
-async function refreshFuture() {
+async function refreshDay() {
   // 清掉签名，强制重绘一次，拿到最新预约
   lastSignature = '';
   await loadState();
@@ -1213,6 +1228,25 @@ function tick() {
   });
 
   checkReminders(current);
+  updateStatFills(current);
+}
+
+// 占用率 / 空闲率在卡片里实时按比例铺一条底色
+function updateStatFills(current) {
+  const fillUsed = els.stats.querySelector('[data-fill="used"]');
+  const fillFree = els.stats.querySelector('[data-fill="free"]');
+  if (!fillUsed && !fillFree) return;
+  let total = 0;
+  let used = 0;
+  for (const machine of state.machines) {
+    for (const gpu of machine.gpus) {
+      total += 1;
+      if (gpuStatus(gpu, current).current) used += 1;
+    }
+  }
+  const usedPct = total ? (used / total) * 100 : 0;
+  if (fillUsed) fillUsed.style.width = `${usedPct.toFixed(1)}%`;
+  if (fillFree) fillFree.style.width = `${(100 - usedPct).toFixed(1)}%`;
 }
 
 /* ------------------------------- 到期提醒 ------------------------------- */

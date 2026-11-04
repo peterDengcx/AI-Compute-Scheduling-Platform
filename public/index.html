@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>算力卡调度台 · GPU 自助申请与占用</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b1220'/%3E%3Crect x='4' y='4' width='10' height='10' rx='2.5' fill='%235eead4'/%3E%3Crect x='18' y='4' width='10' height='10' rx='2.5' fill='%23818cf8'/%3E%3Crect x='4' y='18' width='10' height='10' rx='2.5' fill='%23818cf8'/%3E%3Crect x='18' y='18' width='10' height='10' rx='2.5' fill='%2334d399'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="styles.css?v=26">
+  <link rel="stylesheet" href="styles.css?v=27">
 </head>
 <body>
   <div class="bg-glow" aria-hidden="true"></div>
@@ -41,29 +41,19 @@
         <div class="section-head">
           <div>
             <h2>推理节点</h2>
-            <span class="hint">左侧为 8 卡实时状态，右侧为当天 0:00–24:00 的预约时间轴；空档可直接占用，最多提前 48 小时预约</span>
+            <span class="hint">左侧为 8 卡实时状态，右侧为当天 0:00–24:00 的预约时间轴；切换今天 / 明天 / 后天可查看未来预约，今天的空档可直接占用</span>
           </div>
-          <button class="primary-btn small" id="addNode" type="button">+ 新增节点</button>
-        </div>
-        <div class="machine-grid" id="machines"></div>
-      </section>
-
-      <section class="future-section">
-        <div class="section-head">
-          <div>
-            <h2>未来预约</h2>
-            <span class="hint">与上方同样的节点视图，切换日期即可查看当天每张卡的预约时段；仅查看，今天的空档仍在上方直接占用</span>
-          </div>
-          <div class="future-tools">
-            <div class="seg future-tabs" id="futureTabs">
-              <button type="button" class="seg-btn" data-day="0">今天</button>
-              <button type="button" class="seg-btn active" data-day="1">明天</button>
+          <div class="head-tools">
+            <div class="seg day-tabs" id="dayTabs">
+              <button type="button" class="seg-btn active" data-day="0">今天</button>
+              <button type="button" class="seg-btn" data-day="1">明天</button>
               <button type="button" class="seg-btn" data-day="2">后天</button>
             </div>
-            <button type="button" class="ghost-btn small" id="futureRefresh">刷新</button>
+            <button type="button" class="ghost-btn small" id="dayRefresh">刷新</button>
+            <button class="primary-btn small" id="addNode" type="button">+ 新增节点</button>
           </div>
         </div>
-        <div class="future-grid" id="futureGrid"></div>
+        <div class="machine-grid" id="machines"></div>
       </section>
     </div>
   </main>
@@ -71,6 +61,6 @@
   <div id="modalRoot"></div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-  <script src="app.js?v=26"></script>
+  <script src="app.js?v=27"></script>
 </body>
 </html>
