@@ -109,13 +109,16 @@ function pickGpus(machine, startAt, endAt, count) {
   return free.slice(0, count);
 }
 
-function createBookings(user, machine, gpuIds, { startAt, endAt, note }) {
-  const groupId = crypto.randomUUID();
+function createBookings(user, machine, gpuIds, { startAt, endAt, note, groupId, ownerToken }) {
+  // 释放凭证：只回传给申请人，其他人即使知道姓名也无法释放
+  const group = groupId || crypto.randomUUID();
+  const token = ownerToken || crypto.randomUUID();
   for (const gpuId of gpuIds) {
     const gpu = machine.gpus.find((item) => item.id === gpuId);
     gpu.bookings.push({
       id: crypto.randomUUID(),
-      groupId,
+      groupId: group,
+      ownerToken: token,
       user,
       note,
       count: gpuIds.length,
@@ -124,18 +127,18 @@ function createBookings(user, machine, gpuIds, { startAt, endAt, note }) {
     });
     gpu.bookings.sort((a, b) => a.startAt - b.startAt);
   }
-  return groupId;
+  return { groupId: group, ownerToken: token };
 }
 
-// 按顺序尝试分配，成功返回 { machine, gpuIds, groupId }
-function acquire(user, machineId, startAt, endAt, count, note) {
+// 按顺序尝试分配，成功返回 { machine, gpuIds, groupId, ownerToken }
+function acquire(user, machineId, startAt, endAt, count, note, meta = {}) {
   const pool = machineId === 'any' ? state.machines : [findMachine(machineId)];
   for (const machine of pool) {
     if (!machine) continue;
     const gpuIds = pickGpus(machine, startAt, endAt, count);
     if (!gpuIds) continue;
-    const groupId = createBookings(user, machine, gpuIds, { startAt, endAt, note });
-    return { machine, gpuIds, groupId };
+    const { groupId, ownerToken } = createBookings(user, machine, gpuIds, { startAt, endAt, note, ...meta });
+    return { machine, gpuIds, groupId, ownerToken };
   }
   return null;
 }
@@ -169,7 +172,11 @@ function dispatchQueue() {
       changed = true;
       continue;
     }
-    const result = acquire(entry.user, entry.machineId, now, now + entry.durationMs, entry.gpuCount, entry.note);
+    // 沿用排队项的 id / 凭证，排队人不用再操作就能拿到释放权限
+    const result = acquire(entry.user, entry.machineId, now, now + entry.durationMs, entry.gpuCount, entry.note, {
+      groupId: entry.id,
+      ownerToken: entry.ownerToken,
+    });
     if (!result) {
       index += 1;
       continue;
@@ -260,7 +267,7 @@ function occupy(body) {
     if (busy.length) {
       throw new HttpError(409, `卡 ${busy.join('、')} 在该时段不可用，请重新选择`);
     }
-    const groupId = createBookings(user, machine, requested, { startAt, endAt, note });
+    const { groupId, ownerToken } = createBookings(user, machine, requested, { startAt, endAt, note });
     save();
     return {
       ok: true,
@@ -268,6 +275,7 @@ function occupy(body) {
       machineName: machine.name,
       gpuIndexes: requested,
       groupId,
+      ownerToken,
       startAt,
       endAt,
     };
@@ -288,6 +296,7 @@ function occupy(body) {
     machineName: result.machine.name,
     gpuIndexes: result.gpuIds,
     groupId: result.groupId,
+    ownerToken: result.ownerToken,
     startAt,
     endAt,
   };
@@ -314,11 +323,23 @@ function enqueue(body) {
   const direct = acquire(user, machineId, now, now + durationMs, count, note);
   if (direct) {
     save();
-    return { ok: true, booked: true, machineId: direct.machine.id, machineName: direct.machine.name, gpuIndexes: direct.gpuIds };
+    return {
+      ok: true,
+      booked: true,
+      machineId: direct.machine.id,
+      machineName: direct.machine.name,
+      gpuIndexes: direct.gpuIds,
+      groupId: direct.groupId,
+      ownerToken: direct.ownerToken,
+    };
   }
 
+  const id = crypto.randomUUID();
+  // 排队凭证：分配到卡后沿用同一个 token 作为释放凭证
+  const ownerToken = crypto.randomUUID();
   state.queue.push({
-    id: crypto.randomUUID(),
+    id,
+    ownerToken,
     user,
     machineId,
     gpuCount: count,
@@ -327,7 +348,7 @@ function enqueue(body) {
     createdAt: now,
   });
   save();
-  return { ok: true, booked: false, position: state.queue.length };
+  return { ok: true, booked: false, id, ownerToken, position: state.queue.length };
 }
 
 function release(body) {
@@ -346,7 +367,14 @@ function release(body) {
   const now = Date.now();
   const target =
     gpu.bookings.find((booking) => booking.startAt <= now && booking.endAt > now) || gpu.bookings[0];
-  if (target.user !== user) throw new HttpError(403, '只能释放自己占用的卡');
+  // 有凭证的记录只认凭证，光知道姓名释放不了；早期无凭证的记录退回按姓名校验
+  if (target.ownerToken) {
+    if (target.ownerToken !== String(body.token || '')) {
+      throw new HttpError(403, '这条占用只能由申请时的浏览器释放，请换回原浏览器或等它到期');
+    }
+  } else if (target.user !== user) {
+    throw new HttpError(403, '只能释放自己占用的卡');
+  }
 
   let released = 0;
   if (target.groupId) {
@@ -370,7 +398,14 @@ function cancelQueue(body) {
   const id = String(body.id || '');
   const index = state.queue.findIndex((entry) => entry.id === id);
   if (index === -1) throw new HttpError(404, '排队记录不存在');
-  if (state.queue[index].user !== user) throw new HttpError(403, '只能取消自己的排队');
+  const entry = state.queue[index];
+  if (entry.ownerToken) {
+    if (entry.ownerToken !== String(body.token || '')) {
+      throw new HttpError(403, '这条排队只能由申请时的浏览器取消');
+    }
+  } else if (entry.user !== user) {
+    throw new HttpError(403, '只能取消自己的排队');
+  }
   state.queue.splice(index, 1);
   save();
   return { ok: true };
@@ -406,6 +441,11 @@ function addMachine(body) {
 
 /* --------------------------------- HTTP ---------------------------------- */
 
+// 下发给前端时剥离 ownerToken，只保留"是否带凭证"的标记，避免任何人读到凭证
+function publicBooking({ ownerToken, ...rest }) {
+  return { ...rest, claimed: Boolean(ownerToken) };
+}
+
 function publicMachine(machine) {
   return {
     id: machine.id,
@@ -413,7 +453,7 @@ function publicMachine(machine) {
     name: machine.name,
     ip: machine.ip,
     model: machine.model,
-    gpus: machine.gpus,
+    gpus: machine.gpus.map((gpu) => ({ id: gpu.id, bookings: gpu.bookings.map(publicBooking) })),
   };
 }
 
@@ -424,7 +464,7 @@ function publicState() {
     maxAdvance: MAX_ADVANCE,
     cardChoices: CARD_CHOICES,
     machines: state.machines.map(publicMachine),
-    queue: state.queue,
+    queue: state.queue.map(publicBooking),
   };
 }
 

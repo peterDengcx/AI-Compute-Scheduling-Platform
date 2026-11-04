@@ -31,15 +31,51 @@ const els = {
 let state = { machines: [], queue: [], gpuPerMachine: 8, cardChoices: CARD_OPTIONS };
 let clockOffset = 0;
 let me = localStorage.getItem('gpu.user') || '';
+// 释放凭证：groupId / 排队 id → token，只保存在申请时的这个浏览器里
+let ownedTokens = (() => {
+  try {
+    const raw = JSON.parse(localStorage.getItem('gpu.tokens') || '{}');
+    return raw && typeof raw === 'object' ? raw : {};
+  } catch (err) {
+    return {};
+  }
+})();
+const BASE_TITLE = document.title;
 let selectedDuration = 2 * HOUR;
 let escHandler = null;
 let toastTimer = null;
 let polling = false;
 let lastSignature = '';
+const REMIND_BEFORE = 10 * 60 * 1000;
+const reminded = new Set();
+let titleTimer = null;
 // 节点卡片内嵌申请面板的草稿状态
 let draft = null;
 
 const now = () => Date.now() + clockOffset;
+
+/* ------------------------------- 释放凭证 ------------------------------- */
+
+function rememberOwner(id, token) {
+  if (!id || !token) return;
+  ownedTokens[id] = token;
+  try {
+    localStorage.setItem('gpu.tokens', JSON.stringify(ownedTokens));
+  } catch (err) {
+    /* 存储不可用时仅当前会话有效 */
+  }
+}
+
+function ownerTokenOf(id) {
+  return (id && ownedTokens[id]) || '';
+}
+
+// 带凭证的记录只认凭证；早期没有凭证的记录退回按姓名判断
+function isMine(record) {
+  if (!record) return false;
+  if (ownerTokenOf(record.groupId || record.id)) return true;
+  return !record.claimed && record.user === me;
+}
 
 /* --------------------------------- 初始化 --------------------------------- */
 
@@ -51,8 +87,12 @@ const now = () => Date.now() + clockOffset;
   els.modalRoot.addEventListener('change', onPanelChange);
   els.queueList.addEventListener('click', onQueueClick);
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) poll();
+    if (!document.hidden) {
+      stopTitleBlink();
+      poll();
+    }
   });
+  window.addEventListener('focus', stopTitleBlink);
 
   await loadState();
   setInterval(poll, 2500);
@@ -221,7 +261,7 @@ function renderSlot(machine, gpu) {
   if (current) {
     const total = Math.max(1, current.endAt - current.startAt);
     const percent = Math.min(100, Math.max(0, ((now() - current.startAt) / total) * 100));
-    const mine = current.user === me;
+    const mine = isMine(current);
     const groupTag = current.count > 1 ? `<span class="group-tag">×${current.count}</span>` : '';
     const title = `${current.user}${current.note ? '｜' + current.note : ''}｜至 ${fmtClock(current.endAt)}`;
     return `
@@ -235,7 +275,7 @@ function renderSlot(machine, gpu) {
   }
 
   if (upcoming) {
-    const mine = upcoming.user === me;
+    const mine = isMine(upcoming);
     const title = `${upcoming.user}${upcoming.note ? '｜' + upcoming.note : ''}｜${fmtClock(upcoming.startAt)} 开始`;
     return `
       <button type="button" class="gpu-slot reserved" data-action="detail" data-machine="${machine.id}" data-gpu="${gpu.id}" title="${escapeHtml(title)}">
@@ -635,6 +675,8 @@ async function submitDraft() {
 
   try {
     const result = await fetchJson('/occupy', payload);
+    rememberOwner(result.groupId, result.ownerToken);
+    askNotifyPermission();
     selectedDuration = draft.durationMs;
     me = user;
     localStorage.setItem('gpu.user', user);
@@ -693,7 +735,7 @@ function renderQueue() {
 
   els.queueList.innerHTML = state.queue
     .map((entry, index) => {
-      const mine = entry.user === me;
+      const mine = isMine(entry);
       const target =
         entry.machineId === 'any'
           ? `任一节点 · ${entry.gpuCount || 1} 卡`
@@ -746,6 +788,76 @@ function tick() {
   document.querySelectorAll('.queue-wait[data-since]').forEach((el) => {
     el.textContent = fmtWait(current - Number(el.dataset.since));
   });
+
+  checkReminders(current);
+}
+
+/* ------------------------------- 到期提醒 ------------------------------- */
+
+// 只提醒自己名下的卡：剩余 10 分钟、剩余 1 分钟各一次
+function checkReminders(time) {
+  let pending = false;
+  for (const machine of state.machines) {
+    for (const gpu of machine.gpus) {
+      const booking = gpu.bookings.find((item) => item.startAt <= time && item.endAt > time);
+      if (!booking || !isMine(booking)) continue;
+      const left = booking.endAt - time;
+      const stage = left <= 60 * 1000 ? 1 : left <= REMIND_BEFORE ? 10 : 0;
+      if (!stage) continue;
+      pending = true;
+      const key = `${booking.groupId || booking.id}:${stage}`;
+      if (reminded.has(key)) continue;
+      reminded.add(key);
+      remindExpiring(machine, gpu, booking, stage);
+    }
+  }
+  // 卡已释放或已到期后停止闪烁，避免标题一直闪
+  if (!pending) stopTitleBlink();
+}
+
+function remindExpiring(machine, gpu, booking, stage) {
+  const span = booking.count > 1 ? `同组 ${booking.count} 张卡` : `卡 ${gpu.id}`;
+  const when = stage === 1 ? '不到 1 分钟' : '不到 10 分钟';
+  const text = `${machine.name} · ${span} ${when}后到期，${fmtClock(booking.endAt)} 自动释放`;
+  toast(text, 'warn');
+  startTitleBlink(`⚠️ 算力卡 ${when}内到期`);
+  sendNotification('算力卡即将到期', text);
+}
+
+function askNotifyPermission() {
+  try {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+  } catch (err) {
+    /* 浏览器不支持时只用标题闪烁 */
+  }
+}
+
+function sendNotification(title, body) {
+  try {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    new Notification(title, { body, tag: 'gpu-expiring' });
+  } catch (err) {
+    /* 忽略通知失败 */
+  }
+}
+
+function startTitleBlink(text) {
+  if (titleTimer) return;
+  let on = true;
+  document.title = text;
+  titleTimer = setInterval(() => {
+    on = !on;
+    document.title = on ? text : BASE_TITLE;
+  }, 900);
+}
+
+function stopTitleBlink() {
+  if (!titleTimer) return;
+  clearInterval(titleTimer);
+  titleTimer = null;
+  document.title = BASE_TITLE;
 }
 
 /* ---------------------------------- 交互 ---------------------------------- */
@@ -789,7 +901,7 @@ async function onQueueClick(event) {
 
 async function cancelQueue(id) {
   try {
-    await fetchJson('/queue/cancel', { user: me, id });
+    await fetchJson('/queue/cancel', { user: me, id, token: ownerTokenOf(id) });
     toast('已取消排队');
     await poll();
   } catch (err) {
@@ -852,10 +964,6 @@ function askUser(onSaved) {
 /* ------------------------------- 申请 / 预约 ------------------------------- */
 
 function openQueue(machineId) {
-  if (!me) {
-    askUser(() => openQueue(machineId));
-    return;
-  }
   const machine = findMachine(machineId);
   if (!machine) return;
 
@@ -870,6 +978,10 @@ function openQueue(machineId) {
           <p>${escapeHtml(machine.name)} · ${escapeHtml(machine.model)} · 共 ${machine.gpus.length} 卡</p>
         </div>
         <button type="button" class="icon-btn" data-close>×</button>
+      </div>
+      <div class="field">
+        <label>申请人</label>
+        <input type="text" id="queueUser" maxlength="20" autocomplete="off" value="${escapeHtml(me)}" placeholder="填写你的姓名，作为占用人">
       </div>
       <div class="field">
         <label>申请卡数</label>
@@ -934,6 +1046,13 @@ function openQueue(machineId) {
 
         const confirmBtn = modal.querySelector('#confirmBooking');
         confirmBtn.addEventListener('click', async () => {
+          const userInput = modal.querySelector('#queueUser');
+          const user = String(userInput.value || '').trim();
+          if (!user) {
+            toast('请填写申请人姓名', 'error');
+            userInput.focus();
+            return;
+          }
           if (duration < 5 * 60 * 1000 || duration > 7 * DAY) {
             toast('占用时长需在 5 分钟到 7 天之间', 'error');
             return;
@@ -943,12 +1062,17 @@ function openQueue(machineId) {
           confirmBtn.textContent = '提交中…';
           try {
             const result = await fetchJson('/queue', {
-              user: me,
+              user,
               machineId,
               count,
               durationMs: duration,
               note: modal.querySelector('#bookingNote').value.trim(),
             });
+            // 排队 id 与分配后的 groupId 一致，凭证存下来才能释放/取消
+            rememberOwner(result.groupId || result.id, result.ownerToken);
+            askNotifyPermission();
+            me = user;
+            localStorage.setItem('gpu.user', user);
             selectedDuration = duration;
             closeModal();
             if (result.booked) {
@@ -982,7 +1106,8 @@ function openCardDetail(machineId, gpuIndex) {
   const time = now();
   const { current, upcoming } = gpuStatus(gpu, time);
   const highlight = current || upcoming;
-  const mine = gpu.bookings.some((booking) => booking.user === me);
+  // 只有持有释放凭证（或早期无凭证记录且姓名一致）才显示释放入口
+  const mine = isMine(highlight);
   const schedule = [...gpu.bookings].sort((a, b) => a.startAt - b.startAt);
 
   openModal(
@@ -997,7 +1122,7 @@ function openCardDetail(machineId, gpuIndex) {
       <div class="booking-owner">
         <span class="avatar">${escapeHtml(highlight.user.slice(0, 1))}</span>
         <div>
-          <strong>${escapeHtml(highlight.user)}${highlight.user === me ? '<span class="me-tag">我</span>' : ''}${
+          <strong>${escapeHtml(highlight.user)}${mine ? '<span class="me-tag">我</span>' : ''}${
             highlight.count > 1 ? `<span class="group-tag">×${highlight.count}</span>` : ''
           }</strong>
           <small>${escapeHtml(highlight.note || '未填写用途')}</small>
@@ -1020,7 +1145,7 @@ function openCardDetail(machineId, gpuIndex) {
             (booking) => `
           <div class="schedule-item ${booking.startAt <= time && booking.endAt > time ? 'now' : ''}">
             <span class="schedule-time">${fmtClock(booking.startAt)} → ${fmtClock(booking.endAt)}</span>
-            <span class="schedule-user">${escapeHtml(booking.user)}${booking.user === me ? '（我）' : ''}</span>
+            <span class="schedule-user">${escapeHtml(booking.user)}${isMine(booking) ? '（我）' : ''}</span>
             <span class="schedule-note">${booking.count > 1 ? `同组 ${booking.count} 卡` : '单卡'}</span>
           </div>`
           )
@@ -1070,7 +1195,12 @@ function openReleaseConfirm(machine, gpu, booking) {
         btn.addEventListener('click', async () => {
           btn.disabled = true;
           try {
-            const result = await fetchJson('/release', { user: me, machineId: machine.id, gpuIndex: gpu.id });
+            const result = await fetchJson('/release', {
+              user: me,
+              machineId: machine.id,
+              gpuIndex: gpu.id,
+              token: ownerTokenOf(booking.groupId),
+            });
             closeModal();
             toast(result.released > 1 ? `已释放 ${result.released} 张卡` : `已释放 ${machine.name} · 卡 ${gpu.id}`);
             poll();
