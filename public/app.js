@@ -678,10 +678,10 @@ function liveBadgeHtml(machine) {
   )}">${escapeHtml(info.text)}</span>`;
 }
 
+// 内存统一向上取整到 GB：读数更短，窄卡片里也不会被截断
 function fmtGiB(mb) {
   if (mb == null) return '–';
-  const gib = mb / 1024;
-  return String(gib >= 100 ? Math.round(gib) : Math.round(gib * 10) / 10);
+  return String(Math.ceil(mb / 1024));
 }
 
 // 单卡实机读数：只保留 HBM 与 NPU Util，一行一项，避免一张卡上挤成一长串
@@ -699,8 +699,11 @@ function chipLiveHtml(chip) {
     : chip.memTotal
       ? `HBM ${fmtGiB(chip.memUsed)}/${fmtGiB(chip.memTotal)}G`
       : 'HBM –';
-  const util = chip.aicore == null ? 'NPU Util –' : `NPU Util ${Math.round(chip.aicore)}%`;
-  return `<span class="live-item">${hbm}</span><span class="live-item${chip.aicore >= 95 ? ' hot' : ''}">${util}</span>`;
+  const utilValue = chip.aicore == null ? null : Math.round(chip.aicore);
+  const util = utilValue == null ? 'NPU Util –' : `NPU Util ${utilValue}%`;
+  // 超过 50% 加粗，接近打满再叠加警示色，不只靠颜色区分
+  const utilClass = utilValue == null ? '' : utilValue > 50 ? (utilValue >= 95 ? ' high hot' : ' high') : '';
+  return `<span class="live-item">${hbm}</span><span class="live-item util${utilClass}">${util}</span>`;
 }
 
 function chipLiveTitle(chip) {
