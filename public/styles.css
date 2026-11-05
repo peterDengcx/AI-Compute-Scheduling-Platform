@@ -216,28 +216,50 @@ body {
   background: linear-gradient(165deg, #ffffff, #fbfcff);
 }
 
+/* 头部两行：上行「节点名 …… 修改/删除」，下行「机型 · IP …… 状态徽标」 */
 .machine-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 7px;
   margin-bottom: 14px;
 }
 
-.machine-title h3 { margin: 0; font-size: 18px; font-weight: 600; }
+.machine-title { display: contents; }
+
+.machine-title h3 {
+  grid-area: 1 / 1;
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .machine-title p {
-  margin: 5px 0 0;
-  font-size: 12.5px;
+  grid-area: 2 / 1;
+  margin: 0;
+  font-size: 13px;
   color: var(--dim);
   letter-spacing: 0.2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
 }
 
 .machine-badge {
+  grid-area: 2 / 2;
+  justify-self: end;
   flex: none;
-  padding: 4px 10px;
+  padding: 3px 9px;
   border-radius: 999px;
-  font-size: 12.5px;
+  font-size: 12px;
+  line-height: 1.5;
+  letter-spacing: 0.2px;
   border: 1px solid var(--line-strong);
   color: var(--muted);
   background: rgba(15, 23, 42, 0.04);
@@ -247,18 +269,50 @@ body {
 .machine-badge.busy { color: #4338ca; border-color: rgba(99, 102, 241, 0.3); background: rgba(99, 102, 241, 0.1); }
 .machine-badge.full { color: #b45309; border-color: rgba(217, 119, 6, 0.32); background: rgba(245, 158, 11, 0.12); }
 
+/* 节点右上角：状态徽标 + 最右侧的修改 / 删除 */
+.machine-tools {
+  grid-area: 1 / 2;
+  justify-self: end;
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+
+.tool-btn {
+  padding: 4px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--line-strong);
+  background: #fff;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.tool-btn:hover { color: var(--text); border-color: rgba(15, 23, 42, 0.3); background: #f4f7fb; }
+.tool-btn:active { transform: translateY(1px); }
+.tool-btn:focus-visible { outline: 2px solid rgba(13, 148, 136, 0.45); outline-offset: 1px; }
+
+.tool-btn.danger { color: #b91c1c; border-color: rgba(220, 38, 38, 0.28); }
+.tool-btn.danger:hover { background: #fee2e2; border-color: rgba(220, 38, 38, 0.5); }
+
 .gpu-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
+  /* 行高统一：有预约摘要的卡不会把同排卡片拉高，也不会出现行高参差 */
+  grid-auto-rows: 1fr;
   gap: 9px;
 }
 
 .gpu-slot {
   position: relative;
-  display: block;
+  display: flex;
+  flex-direction: column;
   width: 100%;
-  min-height: 104px;
-  padding: 11px 11px 14px;
+  min-height: 108px;
+  padding: 11px 12px 15px;
   border-radius: 12px;
   border: 1px solid rgba(16, 185, 129, 0.24);
   background: linear-gradient(180deg, rgba(16, 185, 129, 0.08), rgba(16, 185, 129, 0.02));
@@ -294,17 +348,19 @@ body {
 }
 
 .slot-main {
-  margin-top: 10px;
-  font-size: 16.5px;
+  margin-top: 9px;
+  font-size: 17px;
   font-weight: 600;
+  letter-spacing: 0.2px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .slot-sub {
-  margin-top: 4px;
-  font-size: 12px;
+  margin-top: 3px;
+  font-size: 12.5px;
+  line-height: 1.45;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -315,12 +371,13 @@ body {
 .gpu-slot.free .slot-main { color: #047857; }
 .gpu-slot.free .slot-sub { color: rgba(4, 120, 87, 0.62); }
 
-/* 卡上那一行预约摘要：彩色圆点对应用户，文字给出时段 */
+/* 卡上那一行预约摘要：贴底对齐，彩色圆点对应用户，文字给出时段 */
 .slot-reserve {
   display: flex;
   align-items: center;
   gap: 5px;
-  margin-top: 6px;
+  margin-top: auto;
+  padding-top: 7px;
   font-size: 12px;
   line-height: 1.35;
   color: var(--dim);
@@ -341,6 +398,24 @@ body {
 }
 
 .gpu-slot.busy:hover { border-color: rgba(220, 38, 38, 0.62); }
+
+/* 服务器上不可用的卡：置灰斜纹，不可点击 */
+.gpu-slot.disabled {
+  border-color: rgba(15, 23, 42, 0.12);
+  background: repeating-linear-gradient(135deg, #f4f6fa, #f4f6fa 7px, #eef1f7 7px, #eef1f7 14px);
+  color: var(--dim);
+  cursor: not-allowed;
+}
+
+.gpu-slot.disabled:hover {
+  transform: none;
+  border-color: rgba(15, 23, 42, 0.18);
+  box-shadow: none;
+}
+
+.gpu-slot.disabled .dot { background: #cbd5e1; box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.16); }
+.gpu-slot.disabled .slot-main { color: var(--dim); }
+.gpu-slot.disabled .slot-sub { color: var(--dim); }
 
 .gpu-slot.busy .dot { background: #ef4444; box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.16); }
 .gpu-slot.busy .slot-main { color: #b91c1c; }
@@ -556,6 +631,13 @@ body {
 }
 
 .tl-lane:nth-child(even) { background: rgba(15, 23, 42, 0.022); }
+
+/* 禁用的卡在时间轴上整行置灰斜纹 */
+.tl-lane.off {
+  background: repeating-linear-gradient(135deg, #f4f6fa, #f4f6fa 7px, #eef1f7 7px, #eef1f7 14px);
+}
+
+.tl-gpu-label.off { color: #b0b9c8; }
 
 .tl-bar {
   position: absolute;
@@ -844,6 +926,16 @@ body {
 
 .pick-card.locked .pick-main { color: #4338ca; }
 
+.pick-card.disabled {
+  border-color: rgba(15, 23, 42, 0.14);
+  background: repeating-linear-gradient(135deg, #f4f6fa, #f4f6fa 7px, #eef1f7 7px, #eef1f7 14px);
+  cursor: not-allowed;
+}
+
+.pick-card.disabled:hover { transform: none; border-color: rgba(15, 23, 42, 0.14); box-shadow: none; }
+.pick-card.disabled .pick-main,
+.pick-card.disabled .pick-sub { color: var(--dim); }
+
 .apply-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
@@ -1030,6 +1122,12 @@ body {
   border: 1px solid rgba(13, 148, 136, 0.16);
 }
 
+.modal-note.danger {
+  color: #b91c1c;
+  background: rgba(220, 38, 38, 0.07);
+  border-color: rgba(220, 38, 38, 0.2);
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -1045,6 +1143,78 @@ body {
   font-size: 13px;
   color: var(--muted);
 }
+
+.field-optional {
+  margin-left: 4px;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.pwd-wrap { position: relative; }
+
+.pwd-wrap input { padding-right: 58px; }
+
+.pwd-toggle {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.pwd-toggle:hover {
+  color: var(--text);
+  background: #eef2f8;
+  border-color: var(--line-strong);
+}
+
+.pwd-toggle:focus-visible { outline: 2px solid rgba(13, 148, 136, 0.45); outline-offset: 1px; }
+
+/* 新增 / 修改节点时的卡状态选择器 */
+.card-picker {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.card-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  border: 1px solid rgba(16, 185, 129, 0.28);
+  background: rgba(16, 185, 129, 0.07);
+  color: #047857;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.card-chip-name { font-size: 12.5px; font-weight: 600; line-height: 1.4; }
+.card-chip-state { font-size: 11.5px; line-height: 1.4; color: rgba(4, 120, 87, 0.72); }
+
+.card-chip:hover { border-color: rgba(16, 185, 129, 0.6); }
+
+.card-chip.off {
+  border-color: rgba(15, 23, 42, 0.16);
+  background: repeating-linear-gradient(135deg, #f4f6fa, #f4f6fa 6px, #eef1f7 6px, #eef1f7 12px);
+  color: var(--dim);
+}
+
+.card-chip.off .card-chip-state { color: var(--dim); }
+.card-chip:focus-visible { outline: 2px solid rgba(13, 148, 136, 0.45); outline-offset: 1px; }
 
 .chips { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 

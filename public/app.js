@@ -199,7 +199,9 @@ function freePlanText(machine) {
   const time = now();
   const dayEnd = todayStart() + DAY;
   const groups = new Map();
+  const disabled = disabledGpuSet(machine);
   for (const gpu of machine.gpus) {
+    if (disabled.has(gpu.id)) continue;
     const windows = freeWindows(gpu, time, dayEnd);
     if (!windows.length) continue;
     const key = windows
@@ -241,10 +243,16 @@ function renderStats() {
   const time = now();
   let total = 0;
   let used = 0;
+  let disabledTotal = 0;
   let todaySegments = 0;
   let todayCards = 0;
   for (const machine of state.machines) {
+    const disabled = disabledGpuSet(machine);
     for (const gpu of machine.gpus) {
+      if (disabled.has(gpu.id)) {
+        disabledTotal += 1;
+        continue;
+      }
       total += 1;
       if (gpuStatus(gpu, time).current) used += 1;
     }
@@ -261,7 +269,9 @@ function renderStats() {
     <div class="stat-card">
       <div class="stat-label">总算力卡</div>
       <div class="stat-value">${total}<small>张</small></div>
-      <div class="stat-hint">${state.machines.length} 个推理节点 × ${state.gpuPerMachine || 8} 卡</div>
+      <div class="stat-hint">${state.machines.length} 个推理节点 × ${state.gpuPerMachine || 8} 卡${
+        disabledTotal ? ` · ${disabledTotal} 卡禁用` : ''
+      }</div>
     </div>
     <div class="stat-card busy">
       <span class="stat-fill" data-fill="used" style="width:${usedPct}%"></span>
@@ -289,7 +299,9 @@ function todayFreeHours(time) {
   if (dayEnd <= time) return 0;
   let hours = 0;
   for (const machine of state.machines) {
+    const disabled = disabledGpuSet(machine);
     for (const gpu of machine.gpus) {
+      if (disabled.has(gpu.id)) continue;
       hours += (dayEnd - time) / HOUR;
       for (const booking of gpu.bookings) {
         const start = Math.max(booking.startAt, time);
@@ -311,7 +323,7 @@ function machineRows(offset) {
     return `
       <div class="empty-state">
         <strong>还没有推理节点</strong>
-        <span>点击「新增节点」，录入 IP、密码与机型即可接入，节点编号从 0 开始自动生成。</span>
+        <span>点击「新增节点」，录入 IP 与机型即可接入（登录账号 / 密码选填），节点编号从 0 开始自动生成。</span>
         <button type="button" class="primary-btn" data-action="add-node">新增节点</button>
       </div>
     `;
@@ -322,10 +334,13 @@ function machineRows(offset) {
 function machineRow(machine, offset) {
   const isToday = offset === 0;
   const time = now();
+  const disabled = disabledGpuSet(machine);
+  const enabledCount = machine.gpus.length - disabled.size;
   let used = 0;
   let reserved = 0;
   let freeNow = 0;
   for (const gpu of machine.gpus) {
+    if (disabled.has(gpu.id)) continue;
     if (isToday) {
       const status = gpuStatus(gpu, time);
       if (status.current) used += 1;
@@ -338,14 +353,13 @@ function machineRow(machine, offset) {
       reserved += 1;
     }
   }
-  const free = isToday ? freeNow : machine.gpus.length - reserved;
-  const badgeClass = used === machine.gpus.length ? 'full' : used || reserved ? 'busy' : 'free';
-  const badgeText = isToday
-    ? `${used} / ${machine.gpus.length} 使用中`
-    : `${reserved} / ${machine.gpus.length} 已预约`;
+  const free = isToday ? freeNow : enabledCount - reserved;
+  const badgeClass = used && used === enabledCount ? 'full' : used || reserved ? 'busy' : 'free';
+  const badgeText = isToday ? `${used} / ${enabledCount} 使用中` : `${reserved} / ${enabledCount} 已预约`;
+  const disabledText = disabled.size ? ` · ${disabled.size} 卡禁用` : '';
   const footText = isToday
-    ? `${freeNow} 卡空闲可占${reserved ? ` · ${reserved} 卡稍后有约` : ''} · 到点自动释放`
-    : `${reserved} 卡已预约 · ${free} 卡空闲 · 仅查看，今天可直接占用`;
+    ? `${freeNow} 卡空闲可占${reserved ? ` · ${reserved} 卡稍后有约` : ''}${disabledText} · 到点自动释放`
+    : `${reserved} 卡已预约 · ${free} 卡空闲${disabledText} · 仅查看，今天可直接占用`;
   return `
     <article class="machine-row" data-machine-id="${machine.id}">
       <div class="machine-side">
@@ -355,6 +369,14 @@ function machineRow(machine, offset) {
             <p>${escapeHtml(machine.model)} · ${escapeHtml(machine.ip)}</p>
           </div>
           <span class="machine-badge ${badgeClass}">${badgeText}</span>
+          <div class="machine-tools">
+            <button type="button" class="tool-btn" data-action="edit-node" data-machine="${machine.id}" title="修改节点信息">
+              修改
+            </button>
+            <button type="button" class="tool-btn danger" data-action="delete-node" data-machine="${machine.id}" title="删除该节点">
+              删除
+            </button>
+          </div>
         </header>
         <div class="gpu-grid">${machine.gpus.map((gpu) => renderSlot(machine, gpu, offset)).join('')}</div>
         <footer class="machine-foot">
@@ -433,6 +455,7 @@ function todaySummary(machine) {
 function gpuLanes(machine, offset = 0) {
   const dayStart = todayStart() + offset * DAY;
   const dayEnd = dayStart + DAY;
+  const disabled = disabledGpuSet(machine);
   let total = 0;
   const lanes = machine.gpus.map((gpu) => {
     const items = gpu.bookings
@@ -450,7 +473,7 @@ function gpuLanes(machine, offset = 0) {
           endAt: booking.endAt,
         };
       });
-    return { gpuId: gpu.id, items };
+    return { gpuId: gpu.id, disabled: disabled.has(gpu.id), items };
   });
   return { dayStart, dayEnd, lanes, total };
 }
@@ -471,7 +494,12 @@ function renderTimeline(machine, offset = 0) {
     .join('');
 
   const rowLabels = lanes
-    .map((lane) => `<span class="tl-gpu-label">卡 ${lane.gpuId}</span>`)
+    .map(
+      (lane) =>
+        `<span class="tl-gpu-label${lane.disabled ? ' off' : ''}">卡 ${lane.gpuId}${
+          lane.disabled ? ' 禁用' : ''
+        }</span>`
+    )
     .join('');
 
   const rows = lanes
@@ -508,7 +536,7 @@ function renderTimeline(machine, offset = 0) {
             </button>`;
         })
         .join('');
-      return `<div class="tl-lane">${bars}</div>`;
+      return `<div class="tl-lane${lane.disabled ? ' off' : ''}">${bars}</div>`;
     })
     .join('');
 
@@ -590,7 +618,21 @@ function renderDaySlot(machine, gpu, offset) {
   `;
 }
 
+// 物理不可用的卡：显示为「禁用」，不参与任何占用与预约
+function disabledGpuSet(machine) {
+  return new Set(Array.isArray(machine && machine.disabledGpus) ? machine.disabledGpus : []);
+}
+
 function renderSlot(machine, gpu, offset = 0) {
+  if (disabledGpuSet(machine).has(gpu.id)) {
+    return `
+      <div class="gpu-slot disabled" title="该卡在服务器上不可用，已禁用">
+        <div class="slot-top"><span class="slot-name">卡 ${gpu.id}</span><span class="dot"></span></div>
+        <div class="slot-main">禁用</div>
+        <div class="slot-sub">不可用</div>
+      </div>
+    `;
+  }
   if (offset > 0) return renderDaySlot(machine, gpu, offset);
 
   const { current, upcoming } = gpuStatus(gpu, now());
@@ -638,8 +680,9 @@ function renderSlot(machine, gpu, offset = 0) {
 
 function renderApplyPanel(machine) {
   const { start, end } = draftWindow();
+  const disabled = disabledGpuSet(machine);
   const freeIds = new Set(
-    machine.gpus.filter((gpu) => isGpuFreeIn(gpu, start, end)).map((gpu) => gpu.id)
+    machine.gpus.filter((gpu) => !disabled.has(gpu.id) && isGpuFreeIn(gpu, start, end)).map((gpu) => gpu.id)
   );
   // 时间窗变化后自动剔除已不可用的卡
   draft.gpuIds = draft.gpuIds.filter((id) => freeIds.has(id));
@@ -647,6 +690,15 @@ function renderApplyPanel(machine) {
 
   const tiles = machine.gpus
     .map((gpu) => {
+      if (disabled.has(gpu.id)) {
+        return `
+          <div class="pick-card locked disabled" title="该卡在服务器上不可用，已禁用">
+            <span class="pick-name">卡 ${gpu.id}</span>
+            <span class="pick-main">禁用</span>
+            <span class="pick-sub">不可用</span>
+          </div>
+        `;
+      }
       const conflict = gpu.bookings
         .filter((booking) => booking.startAt < end && start < booking.endAt)
         .sort((a, b) => a.startAt - b.startAt)[0];
@@ -772,7 +824,7 @@ function openApply(machineId, presetGpu) {
     const gpu = machine.gpus.find((item) => item.id === presetGpu);
     const status = gpu ? gpuStatus(gpu, time) : null;
     // 只要当前没有被占用就能立即占用；后面还有预约时，时长自动收到那段预约开始前
-    if (gpu && status && !status.current) {
+    if (gpu && status && !status.current && !disabledGpuSet(machine).has(presetGpu)) {
       if (status.upcoming) {
         const room = status.upcoming.startAt - time;
         let clipped = Math.floor(room / (30 * 60 * 1000)) * 30 * 60 * 1000;
@@ -1419,6 +1471,10 @@ function onMachineClick(event) {
     openGroupDetail(machineId, trigger.dataset.group, Number(trigger.dataset.day || 0));
   } else if (action === 'book-any') {
     openApply(machineId, null);
+  } else if (action === 'edit-node') {
+    openEditNode(machineId);
+  } else if (action === 'delete-node') {
+    openDeleteNode(machineId);
   }
 }
 
@@ -1627,6 +1683,47 @@ function openReleaseConfirm(machine, gpu, booking) {
 
 /* --------------------------------- 新增节点 -------------------------------- */
 
+// 密码框默认隐藏内容，点击「显示」切换为明文
+function bindPwdToggle(modal, inputId, buttonId) {
+  const input = modal.querySelector(`#${inputId}`);
+  const button = modal.querySelector(`#${buttonId}`);
+  if (!input || !button) return;
+  button.addEventListener('click', () => {
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    button.textContent = show ? '隐藏' : '显示';
+    button.setAttribute('aria-label', show ? '隐藏密码' : '显示密码');
+  });
+}
+
+// 卡状态选择器：默认全部可用，点击切换为禁用（服务器上损坏 / 不可用的卡）
+function cardToggleHtml(disabled = []) {
+  const set = new Set(disabled);
+  const count = state.gpuPerMachine || 8;
+  const chips = Array.from({ length: count }, (_, id) => {
+    const off = set.has(id);
+    return `
+      <button type="button" class="card-chip${off ? ' off' : ''}" data-card="${id}" aria-pressed="${off}">
+        <span class="card-chip-name">卡 ${id}</span>
+        <span class="card-chip-state">${off ? '禁用' : '可用'}</span>
+      </button>`;
+  }).join('');
+  return `<div class="card-picker">${chips}</div>`;
+}
+
+function bindCardToggles(modal) {
+  const chips = Array.from(modal.querySelectorAll('.card-chip'));
+  for (const chip of chips) {
+    chip.addEventListener('click', () => {
+      const off = chip.classList.toggle('off');
+      chip.setAttribute('aria-pressed', String(off));
+      const label = chip.querySelector('.card-chip-state');
+      if (label) label.textContent = off ? '禁用' : '可用';
+    });
+  }
+  return () => chips.filter((chip) => chip.classList.contains('off')).map((chip) => Number(chip.dataset.card));
+}
+
 function openAddNode() {
   const nextIndex = nextNodeIndex();
 
@@ -1644,14 +1741,25 @@ function openAddNode() {
         <input type="text" id="nodeIp" maxlength="64" placeholder="例如：192.168.1.20">
       </div>
       <div class="field">
-        <label>登录密码</label>
-        <input type="password" id="nodePassword" maxlength="64" placeholder="节点登录密码">
+        <label>登录账号 <span class="field-optional">选填</span></label>
+        <input type="text" id="nodeAccount" maxlength="64" placeholder="例如：root">
+      </div>
+      <div class="field">
+        <label>登录密码 <span class="field-optional">选填</span></label>
+        <div class="pwd-wrap">
+          <input type="password" id="nodePassword" maxlength="64" placeholder="可留空">
+          <button type="button" class="pwd-toggle" id="toggleNodePassword" aria-label="显示密码">显示</button>
+        </div>
       </div>
       <div class="field">
         <label>机型</label>
         <input type="text" id="nodeModel" maxlength="40" placeholder="例如：Ascend 910B / NVIDIA A100">
       </div>
-      <div class="modal-note">密码仅保存在服务端，不会通过接口返回给前端。</div>
+      <div class="field">
+        <label>可用卡 <span class="field-optional">点击卡片可标记为禁用</span></label>
+        ${cardToggleHtml()}
+      </div>
+      <div class="modal-note">登录账号 / 密码均为选填，仅保存在服务端；禁用的卡不参与预约与占用。</div>
       <div class="modal-actions">
         <button type="button" class="ghost-btn" data-close>取消</button>
         <button type="button" class="primary-btn" id="confirmNode">确认新增</button>
@@ -1660,23 +1768,22 @@ function openAddNode() {
     {
       onMount(modal) {
         const ipInput = modal.querySelector('#nodeIp');
+        const accountInput = modal.querySelector('#nodeAccount');
         const pwdInput = modal.querySelector('#nodePassword');
         const modelInput = modal.querySelector('#nodeModel');
         ipInput.focus();
+        bindPwdToggle(modal, 'nodePassword', 'toggleNodePassword');
+        const getDisabledCards = bindCardToggles(modal);
 
         const confirmBtn = modal.querySelector('#confirmNode');
         confirmBtn.addEventListener('click', async () => {
           const ip = ipInput.value.trim();
+          const account = accountInput.value.trim();
           const password = pwdInput.value.trim();
           const model = modelInput.value.trim();
           if (!ip) {
             toast('请填写节点 IP', 'error');
             ipInput.focus();
-            return;
-          }
-          if (!password) {
-            toast('请填写节点登录密码', 'error');
-            pwdInput.focus();
             return;
           }
           if (!model) {
@@ -1687,7 +1794,13 @@ function openAddNode() {
           confirmBtn.disabled = true;
           confirmBtn.textContent = '提交中…';
           try {
-            const result = await fetchJson('/machines', { ip, password, model });
+            const result = await fetchJson('/machines', {
+              ip,
+              account,
+              password,
+              model,
+              disabledGpus: getDisabledCards(),
+            });
             closeModal();
             toast(`已新增 ${result.machine.name}（${result.machine.ip}）`);
             poll();
@@ -1707,6 +1820,159 @@ function nextNodeIndex() {
   let index = 0;
   while (used.has(index)) index += 1;
   return index;
+}
+
+/* ------------------------------- 修改 / 删除节点 ------------------------------ */
+
+function openEditNode(machineId) {
+  const machine = findMachine(machineId);
+  if (!machine) return;
+
+  openModal(
+    `
+      <div class="modal-head">
+        <div>
+          <h3>修改节点信息</h3>
+          <p>${escapeHtml(machine.name)} · 每节点 ${state.gpuPerMachine || 8} 卡</p>
+        </div>
+        <button type="button" class="icon-btn" data-close>×</button>
+      </div>
+      <div class="field">
+        <label>节点 IP</label>
+        <input type="text" id="editIp" maxlength="64" value="${escapeHtml(machine.ip)}">
+      </div>
+      <div class="field">
+        <label>登录账号 <span class="field-optional">选填</span></label>
+        <input type="text" id="editAccount" maxlength="64" placeholder="选填，例如：root">
+      </div>
+      <div class="field">
+        <label>登录密码 <span class="field-optional">选填</span></label>
+        <div class="pwd-wrap">
+          <input type="password" id="editPassword" maxlength="64" placeholder="留空则保持原密码不变">
+          <button type="button" class="pwd-toggle" id="toggleEditPassword" aria-label="显示密码">显示</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>机型</label>
+        <input type="text" id="editModel" maxlength="40" value="${escapeHtml(machine.model)}">
+      </div>
+      <div class="field">
+        <label>可用卡 <span class="field-optional">点击卡片可标记为禁用</span></label>
+        ${cardToggleHtml(machine.disabledGpus || [])}
+      </div>
+      <div class="modal-note">修改只影响节点信息，已存在的预约记录保持不变；禁用的卡不参与预约与占用。</div>
+      <div class="modal-actions">
+        <button type="button" class="ghost-btn" data-close>取消</button>
+        <button type="button" class="primary-btn" id="confirmEdit">保存修改</button>
+      </div>
+    `,
+    {
+      onMount(modal) {
+        const ipInput = modal.querySelector('#editIp');
+        const accountInput = modal.querySelector('#editAccount');
+        const pwdInput = modal.querySelector('#editPassword');
+        const modelInput = modal.querySelector('#editModel');
+        const confirmBtn = modal.querySelector('#confirmEdit');
+
+        bindPwdToggle(modal, 'editPassword', 'toggleEditPassword');
+        const getDisabledCards = bindCardToggles(modal);
+        // 账号 / 密码只在打开弹窗时按需读取，密码默认隐藏
+        accountInput.value = machine.account || '';
+        fetchJson('/machines/credentials', { id: machine.id })
+          .then((data) => {
+            if (!accountInput.value) accountInput.value = data.account || '';
+            if (!pwdInput.value) pwdInput.value = data.password || '';
+          })
+          .catch(() => {});
+
+        confirmBtn.addEventListener('click', async () => {
+          const ip = ipInput.value.trim();
+          const account = accountInput.value.trim();
+          const password = pwdInput.value;
+          const model = modelInput.value.trim();
+          if (!ip) {
+            toast('请填写节点 IP', 'error');
+            ipInput.focus();
+            return;
+          }
+          if (!model) {
+            toast('请填写机型', 'error');
+            modelInput.focus();
+            return;
+          }
+          confirmBtn.disabled = true;
+          confirmBtn.textContent = '保存中…';
+          try {
+            await fetchJson('/machines/update', {
+              id: machine.id,
+              ip,
+              account,
+              password,
+              model,
+              disabledGpus: getDisabledCards(),
+            });
+            closeModal();
+            toast(`已更新 ${machine.name} 的节点信息`);
+            poll();
+          } catch (err) {
+            toast(err.message, 'error');
+            confirmBtn.disabled = false;
+            confirmBtn.textContent = '保存修改';
+          }
+        });
+      },
+    }
+  );
+}
+
+function openDeleteNode(machineId) {
+  const machine = findMachine(machineId);
+  if (!machine) return;
+
+  const time = now();
+  const total = machine.gpus.reduce((sum, gpu) => sum + gpu.bookings.length, 0);
+  const active = machine.gpus.reduce((sum, gpu) => sum + (gpuStatus(gpu, time).current ? 1 : 0), 0);
+  const warning = active
+    ? `当前有 ${active} 张卡正在占用，删除后这些占用会立即失效。`
+    : total
+    ? `该节点共有 ${total} 条预约记录，删除后一并清除。`
+    : '该节点当前没有任何预约记录。';
+
+  openModal(
+    `
+      <div class="modal-head">
+        <div>
+          <h3>删除 ${escapeHtml(machine.name)}</h3>
+          <p>${escapeHtml(machine.model)} · ${escapeHtml(machine.ip)}</p>
+        </div>
+        <button type="button" class="icon-btn" data-close>×</button>
+      </div>
+      <div class="modal-note danger">${warning} 删除后无法恢复。</div>
+      <div class="modal-actions">
+        <button type="button" class="ghost-btn" data-close>取消</button>
+        <button type="button" class="danger-btn" id="confirmDelete">确认删除</button>
+      </div>
+    `,
+    {
+      onMount(modal) {
+        const confirmBtn = modal.querySelector('#confirmDelete');
+        confirmBtn.addEventListener('click', async () => {
+          confirmBtn.disabled = true;
+          confirmBtn.textContent = '删除中…';
+          try {
+            await fetchJson('/machines/delete', { id: machine.id });
+            closeModal();
+            toast(`已删除 ${machine.name}`);
+            poll();
+          } catch (err) {
+            toast(err.message, 'error');
+            confirmBtn.disabled = false;
+            confirmBtn.textContent = '确认删除';
+          }
+        });
+      },
+    }
+  );
 }
 
 /* ---------------------------------- 弹窗 ---------------------------------- */

@@ -37,16 +37,37 @@ class HttpError extends Error {
 /* ---------------------------------- 状态 ---------------------------------- */
 
 // 推理节点全部由用户录入，序号从 0 开始
-function createMachine(index, { ip, password, model }) {
+// disabledGpus 记录物理上不可用的卡，这些卡不参与任何分配
+function createMachine(index, { ip, account, password, model, disabledGpus }) {
+  const disabled = normalizeDisabledGpus(disabledGpus);
   return {
     id: `node-${index}`,
     index,
     name: `推理节点 ${index}`,
     ip,
-    password,
+    account: account || '',
+    password: password || '',
     model,
-    gpus: Array.from({ length: GPU_PER_MACHINE }, (_, i) => ({ id: i, bookings: [] })),
+    disabledGpus: disabled,
+    gpus: Array.from({ length: GPU_PER_MACHINE }, (_, i) => ({
+      id: i,
+      disabled: disabled.includes(i),
+      bookings: [],
+    })),
   };
+}
+
+// 只保留 0 ~ GPU_PER_MACHINE-1 之间的整数，去重并排序
+function normalizeDisabledGpus(value) {
+  if (!Array.isArray(value)) return [];
+  const ids = value
+    .map((item) => Number(item))
+    .filter((id) => Number.isInteger(id) && id >= 0 && id < GPU_PER_MACHINE);
+  return [...new Set(ids)].sort((a, b) => a - b);
+}
+
+function isGpuDisabled(machine, gpuId) {
+  return Boolean(machine && Array.isArray(machine.disabledGpus) && machine.disabledGpus.includes(gpuId));
 }
 
 function buildFreshState() {
@@ -68,7 +89,21 @@ function loadState() {
     if (fs.existsSync(STATE_FILE)) {
       const parsed = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
       // 旧数据里的 queue 字段直接丢弃，改为纯预约制
-      if (isValidState(parsed)) return { machines: parsed.machines };
+      if (isValidState(parsed)) {
+        // 老数据可能没有账号 / 密码字段，统一补成空字符串
+        return {
+          machines: parsed.machines.map((machine) => {
+            const disabledGpus = normalizeDisabledGpus(machine.disabledGpus);
+            return {
+              ...machine,
+              account: typeof machine.account === 'string' ? machine.account : '',
+              password: typeof machine.password === 'string' ? machine.password : '',
+              disabledGpus,
+              gpus: machine.gpus.map((gpu) => ({ ...gpu, disabled: disabledGpus.includes(gpu.id) })),
+            };
+          }),
+        };
+      }
     }
   } catch (err) {
     console.warn('[warn] 数据文件读取失败，使用空数据：', err.message);
@@ -100,7 +135,9 @@ function gpuFreeBetween(gpu, startAt, endAt) {
 
 // 在单台节点内挑选 count 张在目标时段内可用的卡，优先连续卡号
 function pickGpus(machine, startAt, endAt, count) {
-  const free = machine.gpus.filter((gpu) => gpuFreeBetween(gpu, startAt, endAt)).map((gpu) => gpu.id);
+  const free = machine.gpus
+    .filter((gpu) => !isGpuDisabled(machine, gpu.id) && gpuFreeBetween(gpu, startAt, endAt))
+    .map((gpu) => gpu.id);
   if (free.length < count) return null;
   for (let start = 0; start + count <= machine.gpus.length; start += 1) {
     const run = machine.gpus.slice(start, start + count).map((gpu) => gpu.id);
@@ -234,7 +271,7 @@ function occupy(body) {
     const machine = findMachine(machineId);
     const busy = requested.filter((id) => {
       const gpu = machine.gpus.find((item) => item.id === id);
-      return !gpu || !gpuFreeBetween(gpu, startAt, endAt);
+      return !gpu || isGpuDisabled(machine, id) || !gpuFreeBetween(gpu, startAt, endAt);
     });
     if (busy.length) {
       throw new HttpError(409, `卡 ${busy.join('、')} 在该时段不可用，请重新选择`);
@@ -333,9 +370,10 @@ function release(body) {
   return { ok: true, released, future: target.startAt > now };
 }
 
-function addMachine(body) {
+function parseMachineInput(body) {
   const ip = String(body.ip || '').trim();
-  const password = String(body.password || '').trim();
+  const account = body.account == null ? '' : String(body.account).trim();
+  const password = body.password == null ? '' : String(body.password).trim();
   const model = String(body.model || '').trim();
 
   if (!ip) throw new HttpError(400, '请填写节点 IP');
@@ -343,10 +381,24 @@ function addMachine(body) {
     throw new HttpError(400, 'IP 格式不正确，例如 192.168.1.20');
   }
   if (ip.length > 64) throw new HttpError(400, 'IP 长度不能超过 64 个字符');
-  if (!password) throw new HttpError(400, '请填写节点登录密码');
+  // 登录账号 / 密码均为选填
+  if (account.length > 64) throw new HttpError(400, '账号不能超过 64 个字符');
   if (password.length > 64) throw new HttpError(400, '密码不能超过 64 个字符');
   if (!model) throw new HttpError(400, '请填写机型');
   if (model.length > 40) throw new HttpError(400, '机型不能超过 40 个字符');
+  // 未传 disabledGpus 时返回 null，表示沿用原有设置
+  const disabledGpus = Array.isArray(body.disabledGpus) ? normalizeDisabledGpus(body.disabledGpus) : null;
+  return { ip, account, password, model, disabledGpus };
+}
+
+function requireMachine(id) {
+  const machine = findMachine(String(id || ''));
+  if (!machine) throw new HttpError(404, '推理节点不存在');
+  return machine;
+}
+
+function addMachine(body) {
+  const { ip, account, password, model, disabledGpus } = parseMachineInput(body);
   if (state.machines.some((machine) => machine.ip === ip)) {
     throw new HttpError(409, '该 IP 已存在，请勿重复添加');
   }
@@ -354,11 +406,51 @@ function addMachine(body) {
   let index = 0;
   while (state.machines.some((machine) => machine.index === index)) index += 1;
 
-  const machine = createMachine(index, { ip, password, model });
+  const machine = createMachine(index, { ip, account, password, model, disabledGpus: disabledGpus || [] });
   state.machines.push(machine);
   state.machines.sort((a, b) => a.index - b.index);
   save();
   return { ok: true, machine: publicMachine(machine) };
+}
+
+// 修改节点信息：密码留空表示保持原密码不变
+function updateMachine(body) {
+  const machine = requireMachine(body.id);
+  const parsed = parseMachineInput({
+    ip: body.ip === undefined ? machine.ip : body.ip,
+    account: body.account === undefined ? machine.account : body.account,
+    password: body.password === undefined || body.password === '' ? machine.password : body.password,
+    model: body.model === undefined ? machine.model : body.model,
+    disabledGpus: body.disabledGpus === undefined ? machine.disabledGpus : body.disabledGpus,
+  });
+  if (state.machines.some((item) => item.id !== machine.id && item.ip === parsed.ip)) {
+    throw new HttpError(409, '该 IP 已被其他节点使用');
+  }
+  machine.ip = parsed.ip;
+  machine.account = parsed.account;
+  machine.password = parsed.password;
+  machine.model = parsed.model;
+  machine.disabledGpus = parsed.disabledGpus || [];
+  for (const gpu of machine.gpus) {
+    gpu.disabled = machine.disabledGpus.includes(gpu.id);
+  }
+  save();
+  return { ok: true, machine: publicMachine(machine) };
+}
+
+// 查看节点凭据：账号 / 密码只在用户主动查看时下发
+function machineCredentials(body) {
+  const machine = requireMachine(body.id);
+  return { ok: true, account: machine.account || '', password: machine.password || '' };
+}
+
+// 删除节点：该节点上的全部预约记录一并移除
+function deleteMachine(body) {
+  const machine = requireMachine(body.id);
+  const removedBookings = machine.gpus.reduce((sum, gpu) => sum + gpu.bookings.length, 0);
+  state.machines = state.machines.filter((item) => item.id !== machine.id);
+  save();
+  return { ok: true, removed: machine.id, removedBookings };
 }
 
 /* --------------------------------- HTTP ---------------------------------- */
@@ -374,7 +466,9 @@ function publicMachine(machine) {
     index: machine.index,
     name: machine.name,
     ip: machine.ip,
+    account: machine.account || '',
     model: machine.model,
+    disabledGpus: machine.disabledGpus || [],
     gpus: machine.gpus.map((gpu) => ({ id: gpu.id, bookings: gpu.bookings.map(publicBooking) })),
   };
 }
@@ -437,6 +531,12 @@ async function handleApi(req, res, pathname) {
       return sendJson(res, 200, release(body));
     case '/api/machines':
       return sendJson(res, 200, addMachine(body));
+    case '/api/machines/update':
+      return sendJson(res, 200, updateMachine(body));
+    case '/api/machines/credentials':
+      return sendJson(res, 200, machineCredentials(body));
+    case '/api/machines/delete':
+      return sendJson(res, 200, deleteMachine(body));
     default:
       throw new HttpError(404, '接口不存在');
   }
