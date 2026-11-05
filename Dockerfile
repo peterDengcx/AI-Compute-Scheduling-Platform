@@ -5,12 +5,13 @@ WORKDIR /app
 # 零依赖项目，只需要源码；先拷元信息，方便后续扩展依赖缓存
 COPY package.json ./
 COPY server.js ./
+COPY npu.js ./
 COPY public ./public
 
 ENV NODE_ENV=production \
     PORT=8787
 
-RUN mkdir -p /app/data
+RUN apk add --no-cache openssh-client iputils && mkdir -p /app/data
 
 EXPOSE 8787
 

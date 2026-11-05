@@ -4,11 +4,14 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const npu = require('./npu');
 
 const PORT = Number(process.env.PORT) || 8787;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const DATA_DIR = path.join(__dirname, 'data');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
+// 上一份可用数据的备份，主文件损坏时用它恢复
+const BACKUP_FILE = `${STATE_FILE}.bak`;
 
 const GPU_PER_MACHINE = 8;
 const MIN_DURATION = 5 * 60 * 1000;
@@ -84,43 +87,112 @@ function isValidState(parsed) {
   );
 }
 
-function loadState() {
+// 读一份状态文件：能解析且结构合法才返回；否则把可疑文件另存为 .corrupt-<时间戳>，
+// 避免后面直接写空数据把它覆盖掉，出问题时还能人工找回
+function readStateFile(file) {
+  if (!fs.existsSync(file)) return null;
   try {
-    if (fs.existsSync(STATE_FILE)) {
-      const parsed = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-      // 旧数据里的 queue 字段直接丢弃，改为纯预约制
-      if (isValidState(parsed)) {
-        // 老数据可能没有账号 / 密码字段，统一补成空字符串
-        return {
-          machines: parsed.machines.map((machine) => {
-            const disabledGpus = normalizeDisabledGpus(machine.disabledGpus);
-            return {
-              ...machine,
-              account: typeof machine.account === 'string' ? machine.account : '',
-              password: typeof machine.password === 'string' ? machine.password : '',
-              disabledGpus,
-              gpus: machine.gpus.map((gpu) => ({ ...gpu, disabled: disabledGpus.includes(gpu.id) })),
-            };
-          }),
-        };
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (isValidState(parsed)) return parsed;
+    console.warn(`[warn] 数据结构不合法：${path.basename(file)}`);
+  } catch (err) {
+    console.warn(`[warn] 数据文件解析失败：${path.basename(file)} ${err.message}`);
+  }
+  try {
+    fs.copyFileSync(file, `${file}.corrupt-${Date.now()}`);
+  } catch (err) {
+    /* 留档失败不影响启动 */
+  }
+  return null;
+}
+
+function normalizeMachines(parsed) {
+  // 老数据可能没有账号 / 密码字段，统一补成空字符串
+  return parsed.machines.map((machine) => {
+    const disabledGpus = normalizeDisabledGpus(machine.disabledGpus);
+    return {
+      ...machine,
+      account: typeof machine.account === 'string' ? machine.account : '',
+      password: typeof machine.password === 'string' ? machine.password : '',
+      disabledGpus,
+      gpus: machine.gpus.map((gpu) => ({ ...gpu, disabled: disabledGpus.includes(gpu.id) })),
+    };
+  });
+}
+
+function isUsableStateFile(file) {
+  try {
+    return isValidState(JSON.parse(fs.readFileSync(file, 'utf8')));
+  } catch (err) {
+    return false;
+  }
+}
+
+// 原子落盘：先写临时文件并 fsync，再重命名覆盖主文件，
+// 这样机器重启 / 断电时要么是旧数据、要么是新数据，不会留下半截 JSON
+function writeStateAtomic(data) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  const tmp = `${STATE_FILE}.tmp`;
+  const fd = fs.openSync(tmp, 'w');
+  try {
+    fs.writeFileSync(fd, JSON.stringify(data, null, 2));
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  // 覆盖前把上一份「仍然可用」的数据留作备份；主文件已损坏时不备份，避免把好备份覆盖掉
+  if (fs.existsSync(STATE_FILE) && isUsableStateFile(STATE_FILE)) {
+    try {
+      fs.copyFileSync(STATE_FILE, BACKUP_FILE);
+    } catch (err) {
+      /* 备份失败不影响保存 */
+    }
+  }
+  fs.renameSync(tmp, STATE_FILE);
+}
+
+function loadState() {
+  // 主文件可用就直接用（哪怕是空列表，那是用户主动删光了节点）
+  const primary = readStateFile(STATE_FILE);
+  if (primary) {
+    const machines = normalizeMachines(primary);
+    // 启动时确保备份可用：备份缺失或损坏就用当前数据补一份
+    if (!isUsableStateFile(BACKUP_FILE)) {
+      try {
+        fs.copyFileSync(STATE_FILE, BACKUP_FILE);
+      } catch (err) {
+        console.warn('[warn] 备份数据写入失败：', err.message);
       }
     }
-  } catch (err) {
-    console.warn('[warn] 数据文件读取失败，使用空数据：', err.message);
+    console.log(`[info] 已加载 ${machines.length} 个节点`);
+    return { machines };
+  }
+  // 主文件缺失 / 损坏：依次尝试备份文件和上次未完成的临时文件
+  for (const file of [BACKUP_FILE, `${STATE_FILE}.tmp`]) {
+    const recovered = readStateFile(file);
+    if (!recovered) continue;
+    const machines = normalizeMachines(recovered);
+    console.warn(`[warn] 已从 ${path.basename(file)} 恢复 ${machines.length} 个节点`);
+    try {
+      writeStateAtomic({ machines });
+    } catch (err) {
+      console.warn('[warn] 恢复数据写回失败：', err.message);
+    }
+    return { machines };
   }
   const fresh = buildFreshState();
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(STATE_FILE, JSON.stringify(fresh, null, 2));
+  writeStateAtomic(fresh);
   return fresh;
 }
 
 let state = loadState();
 
 function save() {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  const tmp = `${STATE_FILE}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-  fs.renameSync(tmp, STATE_FILE);
+  try {
+    writeStateAtomic(state);
+  } catch (err) {
+    console.error('[error] 数据保存失败：', err.message);
+  }
 }
 
 /* --------------------------------- 调度逻辑 -------------------------------- */
@@ -410,6 +482,8 @@ function addMachine(body) {
   state.machines.push(machine);
   state.machines.sort((a, b) => a.index - b.index);
   save();
+  // 新节点加入后立刻采集一次实机状态，不用等下一次后台巡检
+  npu.refreshOne(machine).catch((err) => console.error('[npu] 新节点采集失败：', err.message || err));
   return { ok: true, machine: publicMachine(machine) };
 }
 
@@ -449,6 +523,7 @@ function deleteMachine(body) {
   const machine = requireMachine(body.id);
   const removedBookings = machine.gpus.reduce((sum, gpu) => sum + gpu.bookings.length, 0);
   state.machines = state.machines.filter((item) => item.id !== machine.id);
+  npu.forget(machine.id);
   save();
   return { ok: true, removed: machine.id, removedBookings };
 }
@@ -474,12 +549,19 @@ function publicMachine(machine) {
 }
 
 function publicState() {
+  const live = {};
+  for (const machine of state.machines) {
+    const snapshot = npu.publicSnapshot(npu.get(machine.id));
+    if (snapshot) live[machine.id] = snapshot;
+  }
   return {
     serverTime: Date.now(),
     gpuPerMachine: GPU_PER_MACHINE,
     maxAdvance: MAX_ADVANCE,
     cardChoices: CARD_CHOICES,
     machines: state.machines.map(publicMachine),
+    // 实机状态：只读展示，采集失败时为 offline / auth-failed 等
+    live,
   };
 }
 
@@ -537,6 +619,12 @@ async function handleApi(req, res, pathname) {
       return sendJson(res, 200, machineCredentials(body));
     case '/api/machines/delete':
       return sendJson(res, 200, deleteMachine(body));
+    // 手动触发一次实机状态采集
+    case '/api/npu/refresh': {
+      const machine = requireMachine(body.id);
+      const snapshot = await npu.refreshOne(machine);
+      return sendJson(res, 200, { ok: true, live: npu.publicSnapshot(snapshot) });
+    }
     default:
       throw new HttpError(404, '接口不存在');
   }
@@ -587,6 +675,9 @@ setInterval(() => {
 }, 1000).unref();
 
 refresh();
+
+// 后台巡检各节点实机状态：启动时一次，之后每小时一次
+npu.start(() => state.machines);
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`算力卡调度台已启动: http://localhost:${PORT}`);

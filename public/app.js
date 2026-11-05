@@ -51,6 +51,8 @@ let lastSignature = '';
 const REMIND_BEFORE = 10 * 60 * 1000;
 const reminded = new Set();
 let titleTimer = null;
+// 实机状态（npu-smi）变化的独立签名，用于局部刷新而不重建页面
+let lastLiveSignature = '';
 // 节点卡片内嵌申请面板的草稿状态
 let draft = null;
 // 节点视图选中的日期：0 今天、1 明天、2 后天
@@ -149,8 +151,17 @@ function applyState(data) {
   state = data;
   // 把「今天」也算进签名，0 点一到就重绘时间轴，无需等数据变化
   const signature = JSON.stringify([data.machines, todayStart()]);
-  if (signature === lastSignature) return;
+  const liveSignature = JSON.stringify(data.live || {});
+  if (signature === lastSignature) {
+    // 预约数据没变、只有实机状态变了：只更新状态文字，不重建整个页面
+    if (liveSignature !== lastLiveSignature) {
+      lastLiveSignature = liveSignature;
+      patchLive();
+    }
+    return;
+  }
   lastSignature = signature;
+  lastLiveSignature = liveSignature;
   render();
   // 数据变化时只刷新弹层内容，不重建页面其余部分
   if (draft) refreshApplyModal();
@@ -368,8 +379,14 @@ function machineRow(machine, offset) {
             <h3>${escapeHtml(machine.name)}</h3>
             <p>${escapeHtml(machine.model)} · ${escapeHtml(machine.ip)}</p>
           </div>
-          <span class="machine-badge ${badgeClass}">${badgeText}</span>
+          <div class="machine-badges">
+            ${liveBadgeHtml(machine)}
+            <span class="machine-badge ${badgeClass}">${badgeText}</span>
+          </div>
           <div class="machine-tools">
+            <button type="button" class="tool-btn" data-action="refresh-live" data-machine="${machine.id}" title="立即探测实机状态（ping + npu-smi）">
+              检测
+            </button>
             <button type="button" class="tool-btn" data-action="edit-node" data-machine="${machine.id}" title="修改节点信息">
               修改
             </button>
@@ -623,6 +640,147 @@ function disabledGpuSet(machine) {
   return new Set(Array.isArray(machine && machine.disabledGpus) ? machine.disabledGpus : []);
 }
 
+/* ------------------------------- 实机状态展示 ------------------------------- */
+
+function machineLive(machineId) {
+  return (state.live && state.live[machineId]) || null;
+}
+
+// 节点右上角的实机徽标：在线 / 机器下线 / SSH 认证失败 等
+function liveBadgeInfo(machine) {
+  const live = machineLive(machine.id);
+  if (!live) return { cls: 'idle', text: '待检测', title: '尚未采集到实机状态' };
+  const pingText = live.pingMs != null ? ` ${live.pingMs}ms` : '';
+  switch (live.status) {
+    case 'online':
+      return {
+        cls: 'on',
+        text: `在线${pingText}`,
+        title: `${live.chips.length} 张卡 · ${live.strategy || 'ssh'} · ${fmtClock(live.checkedAt)} 更新`,
+      };
+    case 'offline':
+      return { cls: 'off', text: '机器下线', title: live.error || 'ping 不通' };
+    case 'auth-failed':
+      return { cls: 'warn', text: 'SSH 认证失败', title: live.error || '' };
+    case 'no-npu-smi':
+      return { cls: 'warn', text: '无 npu-smi', title: live.error || '' };
+    case 'parse-error':
+      return { cls: 'warn', text: '状态解析失败', title: live.error || '' };
+    default:
+      return { cls: 'warn', text: 'SSH 失败', title: live.error || '' };
+  }
+}
+
+function liveBadgeHtml(machine) {
+  const info = liveBadgeInfo(machine);
+  return `<span class="live-badge ${info.cls}" data-live-node="${machine.id}" title="${escapeHtml(
+    info.title || ''
+  )}">${escapeHtml(info.text)}</span>`;
+}
+
+function fmtGiB(mb) {
+  if (mb == null) return '–';
+  const gib = mb / 1024;
+  return String(gib >= 100 ? Math.round(gib) : Math.round(gib * 10) / 10);
+}
+
+// 单卡实机读数：只保留 HBM 与 NPU Util，一行一项，避免一张卡上挤成一长串
+function chipLiveInfo(machine, gpuId) {
+  const live = machineLive(machine.id);
+  if (!live || live.status !== 'online') return null;
+  return live.chips.find((chip) => chip.id === gpuId) || { missing: true, processCount: 0 };
+}
+
+function chipLiveHtml(chip) {
+  if (!chip) return '';
+  if (chip.missing) return '<span class="live-item">实机未上报该卡</span>';
+  const hbm = chip.hbmTotal
+    ? `HBM ${fmtGiB(chip.hbmUsed)}/${fmtGiB(chip.hbmTotal)}G`
+    : chip.memTotal
+      ? `HBM ${fmtGiB(chip.memUsed)}/${fmtGiB(chip.memTotal)}G`
+      : 'HBM –';
+  const util = chip.aicore == null ? 'NPU Util –' : `NPU Util ${Math.round(chip.aicore)}%`;
+  return `<span class="live-item">${hbm}</span><span class="live-item${chip.aicore >= 95 ? ' hot' : ''}">${util}</span>`;
+}
+
+function chipLiveTitle(chip) {
+  if (!chip || chip.missing) return '';
+  const lines = [chip.healthy ? '健康正常' : `健康异常：${chip.health}`];
+  if (chip.processCount) {
+    lines.push(`进程 ${chip.processCount} 个`);
+    for (const proc of chip.processes || []) {
+      lines.push(`${proc.name}（pid ${proc.pid}，${fmtGiB(proc.memMb)}G）`);
+    }
+  } else {
+    lines.push('没有进程占用');
+  }
+  return lines.join('\n');
+}
+
+function chipLiveClass(chip) {
+  const classes = ['slot-live'];
+  if (!chip) classes.push('empty');
+  else if (chip.missing || !chip.healthy) classes.push('warn');
+  else if (chip.processCount) classes.push('busy');
+  return classes.join(' ');
+}
+
+// 卡片内的实机读数行；没有采集结果时不渲染
+function liveLine(machine, gpuId) {
+  const chip = chipLiveInfo(machine, gpuId);
+  if (!chip) return '';
+  return `<div class="${chipLiveClass(chip)}" data-live-chip="${machine.id}:${gpuId}" title="${escapeHtml(
+    chipLiveTitle(chip)
+  )}">${chipLiveHtml(chip)}</div>`;
+}
+
+function paintChipLive(el, machine, gpuId) {
+  const chip = chipLiveInfo(machine, gpuId);
+  el.innerHTML = chipLiveHtml(chip);
+  el.title = chipLiveTitle(chip);
+  el.className = chipLiveClass(chip);
+}
+
+// 需要展示实机读数的卡位：节点在线时，每张未禁用的卡都要有一个读数块
+function expectedLiveKeys() {
+  const keys = [];
+  for (const machine of state.machines || []) {
+    const live = machineLive(machine.id);
+    if (!live || live.status !== 'online') continue;
+    const disabled = disabledGpuSet(machine);
+    for (const gpu of machine.gpus) {
+      if (!disabled.has(gpu.id)) keys.push(`${machine.id}:${gpu.id}`);
+    }
+  }
+  return keys.sort();
+}
+
+function patchLive() {
+  for (const el of document.querySelectorAll('[data-live-node]')) {
+    const machine = findMachine(el.dataset.liveNode);
+    if (!machine) continue;
+    const info = liveBadgeInfo(machine);
+    el.className = `live-badge ${info.cls}`;
+    el.textContent = info.text;
+    el.title = info.title || '';
+  }
+  // 卡片上的读数块是渲染时按「节点是否在线」决定要不要插入的，
+  // 一旦某台节点从待检测 / 下线变成在线，就必须重建卡片才能补上这些读数块；
+  // 反之节点掉线也要重建，避免留下旧的读数
+  const rendered = Array.from(document.querySelectorAll('[data-live-chip]'), (el) => el.dataset.liveChip).sort();
+  const expected = expectedLiveKeys();
+  if (rendered.length !== expected.length || rendered.some((key, index) => key !== expected[index])) {
+    renderMachines();
+    return;
+  }
+  for (const el of document.querySelectorAll('[data-live-chip]')) {
+    const [machineId, gpuId] = el.dataset.liveChip.split(':');
+    const machine = findMachine(machineId);
+    if (!machine) continue;
+    paintChipLive(el, machine, Number(gpuId));
+  }
+}
+
 function renderSlot(machine, gpu, offset = 0) {
   if (disabledGpuSet(machine).has(gpu.id)) {
     return `
@@ -637,6 +795,8 @@ function renderSlot(machine, gpu, offset = 0) {
 
   const { current, upcoming } = gpuStatus(gpu, now());
   const reserve = upcoming ? `<div class="slot-reserve">${bookingChip(upcoming)}</div>` : '';
+  // 实机读数（AICore / HBM / 温度），采集不到时为空串
+  const live = liveLine(machine, gpu.id);
 
   if (current) {
     const total = Math.max(1, current.endAt - current.startAt);
@@ -649,6 +809,7 @@ function renderSlot(machine, gpu, offset = 0) {
         <div class="slot-top"><span class="slot-name">卡 ${gpu.id}${groupTag}</span><span class="dot"></span></div>
         <div class="slot-main">${escapeHtml(current.user)}${mine ? '<span class="me-tag">我</span>' : ''}</div>
         <div class="slot-sub timer" data-start="${current.startAt}" data-end="${current.endAt}">剩余 ${fmtRemain(current.endAt - now())}</div>
+        ${live}
         ${reserve}
         <div class="slot-bar"><i style="width:${percent.toFixed(1)}%"></i></div>
       </button>
@@ -663,6 +824,7 @@ function renderSlot(machine, gpu, offset = 0) {
         <div class="slot-top"><span class="slot-name">卡 ${gpu.id}</span><span class="dot"></span></div>
         <div class="slot-main">空闲</div>
         <div class="slot-sub">现在可占</div>
+        ${live}
         ${reserve}
       </button>
     `;
@@ -672,6 +834,7 @@ function renderSlot(machine, gpu, offset = 0) {
     <button type="button" class="gpu-slot free" data-action="book" data-machine="${machine.id}" data-gpu="${gpu.id}" title="点击申请这张卡">
       <div class="slot-top"><span class="slot-name">卡 ${gpu.id}</span><span class="dot"></span></div>
       <div class="slot-main">空闲</div>
+      ${live}
     </button>
   `;
 }
@@ -1475,6 +1638,32 @@ function onMachineClick(event) {
     openEditNode(machineId);
   } else if (action === 'delete-node') {
     openDeleteNode(machineId);
+  } else if (action === 'refresh-live') {
+    refreshLive(machineId, trigger);
+  }
+}
+
+// 手动触发一次实机探测：ping + SSH 执行 npu-smi info
+async function refreshLive(machineId, button) {
+  if (!machineId) return;
+  if (button) {
+    button.disabled = true;
+    button.textContent = '检测中';
+  }
+  try {
+    const data = await fetchJson('/npu/refresh', { id: machineId });
+    state.live = { ...(state.live || {}), [machineId]: data.live };
+    lastLiveSignature = JSON.stringify(state.live);
+    patchLive();
+    const status = data.live && data.live.status;
+    toast(status === 'online' ? '实机状态已更新' : `实机探测：${liveBadgeInfo(findMachine(machineId)).text}`, status === 'online' ? 'success' : 'error');
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = '检测';
+    }
   }
 }
 
